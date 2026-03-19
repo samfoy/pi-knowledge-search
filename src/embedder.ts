@@ -85,7 +85,8 @@ class OpenAIEmbedder implements Embedder {
 
   async embed(text: string, signal?: AbortSignal): Promise<number[]> {
     const results = await this.embedBatch([text], signal);
-    return results[0]!;
+    if (!results[0]) throw new Error("Embedding failed — provider returned no vector");
+    return results[0];
   }
 
   async embedBatch(
@@ -175,7 +176,8 @@ class BedrockEmbedder implements Embedder {
 
   async embed(text: string, signal?: AbortSignal): Promise<number[]> {
     const results = await this.embedBatch([text], signal);
-    return results[0]!;
+    if (!results[0]) throw new Error("Embedding failed — provider returned no vector");
+    return results[0];
   }
 
   async embedBatch(

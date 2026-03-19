@@ -181,6 +181,7 @@ export class KnowledgeIndex {
 
     const scored: { absPath: string; score: number }[] = [];
     for (const [absPath, entry] of Object.entries(this.data.entries)) {
+      if (!entry.vector) continue; // skip corrupted/null entries
       const score = dotProduct(queryVector, entry.vector);
       scored.push({ absPath, score });
     }
@@ -219,6 +220,11 @@ export class KnowledgeIndex {
     const title = relPath.replace(/\.[^.]+$/, "").replace(/\//g, " > ");
     const text = `Title: ${title}\n\n${content}`;
     const vector = await this.embedder.embed(text);
+
+    if (!vector) {
+      // Embedding failed — don't store a null vector
+      return;
+    }
 
     this.data.entries[absPath] = {
       relPath,
