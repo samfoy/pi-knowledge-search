@@ -247,6 +247,22 @@ export class KnowledgeIndex {
     }
   }
 
+  /** Alias for removeFile — removes all data for a file path. */
+  deleteFile(absPath: string): void {
+    this.removeFile(absPath);
+  }
+
+  /** Flush pending saves and release resources. */
+  close(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (this.dirty) {
+      this.save();
+    }
+  }
+
   // -----------------------------------------------------------------------
   // Scanning
   // -----------------------------------------------------------------------

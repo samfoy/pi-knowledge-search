@@ -12,7 +12,7 @@ export class FileWatcher {
   private index: KnowledgeIndex;
   private watchers: fs.FSWatcher[] = [];
   private pending = new Map<string, ReturnType<typeof setTimeout>>();
-  private DEBOUNCE_MS = 2000;
+  private DEBOUNCE_MS = 300;
 
   constructor(config: Config, index: KnowledgeIndex) {
     this.config = config;

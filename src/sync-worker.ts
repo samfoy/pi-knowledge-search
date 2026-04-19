@@ -3,6 +3,17 @@ import { loadConfig } from "./config";
 import { createEmbedder } from "./embedder";
 import { KnowledgeIndex } from "./index-store";
 
+// Report uncaught errors back to parent before exiting
+process.on("uncaughtException", (err) => {
+  process.stderr.write(`knowledge-search worker uncaught: ${err.message}\n`);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  process.stderr.write(`knowledge-search worker unhandled rejection: ${reason}\n`);
+  process.exit(1);
+});
+
 const config = loadConfig();
 if (!config) {
   process.exit(0);

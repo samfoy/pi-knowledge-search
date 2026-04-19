@@ -44,6 +44,34 @@ function truncate(text: string, maxChars = 10000): string {
   return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
+const RETRY_DELAYS = [1000, 2000, 4000]; // exponential backoff for 429s
+
+/** Retry a fetch-based operation on 429 rate-limit errors with exponential backoff. */
+async function withRateLimitRetry<T>(
+  fn: () => Promise<T>,
+  label: string
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      const is429 =
+        err?.message?.includes("429") ||
+        err?.name === "ThrottlingException" ||
+        err?.$metadata?.httpStatusCode === 429;
+      if (is429 && attempt < RETRY_DELAYS.length) {
+        const delay = RETRY_DELAYS[attempt];
+        console.error(
+          `knowledge-search: ${label} rate limited, retrying in ${delay}ms (attempt ${attempt + 1}/${RETRY_DELAYS.length})`
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 /** Run an async function over an array with bounded concurrency. */
 async function parallelMap<T, R>(
   items: T[],
@@ -103,28 +131,30 @@ class OpenAIEmbedder implements Embedder {
       const batch = texts.slice(i, i + BATCH).map((t) => truncate(t));
 
       try {
-        const res = await fetch("https://api.openai.com/v1/embeddings", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            input: batch,
-            model: this.model,
-            dimensions: this.dimensions,
-          }),
-          signal,
-        });
+        const json = await withRateLimitRetry(async () => {
+          const res = await fetch("https://api.openai.com/v1/embeddings", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${this.apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              input: batch,
+              model: this.model,
+              dimensions: this.dimensions,
+            }),
+            signal,
+          });
 
-        if (!res.ok) {
-          const body = await res.text();
-          throw new Error(`OpenAI API ${res.status}: ${body.slice(0, 200)}`);
-        }
+          if (!res.ok) {
+            const body = await res.text();
+            throw new Error(`OpenAI API ${res.status}: ${body.slice(0, 200)}`);
+          }
 
-        const json = (await res.json()) as {
-          data: { embedding: number[]; index: number }[];
-        };
+          return (await res.json()) as {
+            data: { embedding: number[]; index: number }[];
+          };
+        }, "OpenAI embed");
 
         for (const item of json.data) {
           results[i + item.index] = item.embedding;
@@ -205,33 +235,35 @@ class BedrockEmbedder implements Embedder {
   }
 
   private async callBedrock(client: any, text: string): Promise<number[]> {
-    const { InvokeModelCommand } = await import(
-      "@aws-sdk/client-bedrock-runtime"
-    );
-
-    const body = JSON.stringify({
-      inputText: truncate(text),
-      dimensions: this.dimensions,
-      normalize: true,
-    });
-
-    const command = new InvokeModelCommand({
-      modelId: this.model,
-      contentType: "application/json",
-      accept: "application/json",
-      body: new TextEncoder().encode(body),
-    });
-
-    const response = await client.send(command);
-    const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-
-    if (!responseBody.embedding) {
-      throw new Error(
-        "Unexpected Bedrock response: " +
-          JSON.stringify(responseBody).slice(0, 200)
+    return withRateLimitRetry(async () => {
+      const { InvokeModelCommand } = await import(
+        "@aws-sdk/client-bedrock-runtime"
       );
-    }
-    return responseBody.embedding;
+
+      const body = JSON.stringify({
+        inputText: truncate(text),
+        dimensions: this.dimensions,
+        normalize: true,
+      });
+
+      const command = new InvokeModelCommand({
+        modelId: this.model,
+        contentType: "application/json",
+        accept: "application/json",
+        body: new TextEncoder().encode(body),
+      });
+
+      const response = await client.send(command);
+      const responseBody = JSON.parse(new TextDecoder().decode(response.body));
+
+      if (!responseBody.embedding) {
+        throw new Error(
+          "Unexpected Bedrock response: " +
+            JSON.stringify(responseBody).slice(0, 200)
+        );
+      }
+      return responseBody.embedding;
+    }, "Bedrock embed");
   }
 }
 
@@ -249,20 +281,22 @@ class OllamaEmbedder implements Embedder {
   }
 
   async embed(text: string, signal?: AbortSignal): Promise<number[]> {
-    const res = await fetch(`${this.url}/api/embed`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model: this.model, input: truncate(text) }),
-      signal,
-    });
+    return withRateLimitRetry(async () => {
+      const res = await fetch(`${this.url}/api/embed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: this.model, input: truncate(text) }),
+        signal,
+      });
 
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Ollama API ${res.status}: ${body.slice(0, 200)}`);
-    }
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`Ollama API ${res.status}: ${body.slice(0, 200)}`);
+      }
 
-    const json = (await res.json()) as { embeddings: number[][] };
-    return json.embeddings[0];
+      const json = (await res.json()) as { embeddings: number[][] };
+      return json.embeddings[0];
+    }, "Ollama embed");
   }
 
   async embedBatch(

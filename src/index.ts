@@ -18,6 +18,7 @@ export default function (pi: ExtensionAPI) {
   let watcher: FileWatcher | null = null;
   let currentConfig: Config | null = null;
   let syncDone = false;
+  let workerExitExpected = false;
 
   // ------------------------------------------------------------------
   // Lifecycle
@@ -36,43 +37,65 @@ export default function (pi: ExtensionAPI) {
     index.loadSync();
 
     // Sync in a child process so it never blocks the main event loop
-    const worker = fork(
-      join(import.meta.dirname, "sync-worker.ts"),
-      [],
-      {
-        execArgv: ["--import", "tsx/esm"],
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
-        env: { ...process.env },
-      }
-    );
-
-    let stdout = "";
-    worker.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
-    worker.on("exit", (code) => {
-      syncDone = true;
-      if (code === 0 && stdout) {
-        try {
-          const result = JSON.parse(stdout);
-          // Reload the index from disk since the worker updated it
-          index!.loadSync();
-          const changes = result.added + result.updated + result.removed;
-          if (changes > 0) {
-            ctx.ui.setStatus(
-              "knowledge-search",
-              `Index: +${result.added} ~${result.updated} -${result.removed} (${result.size} files)`
-            );
-            setTimeout(() => ctx.ui.setStatus("knowledge-search", ""), 5000);
-          }
-        } catch {
-          // ignore parse errors
+    function spawnWorker() {
+      const worker = fork(
+        join(import.meta.dirname, "sync-worker.ts"),
+        [],
+        {
+          execArgv: ["--import", "tsx/esm"],
+          stdio: ["ignore", "pipe", "pipe", "ipc"],
+          env: { ...process.env },
         }
-      }
-    });
-    worker.unref();
+      );
+
+      let stdout = "";
+      worker.stdout?.on("data", (chunk: Buffer) => { stdout += chunk.toString(); });
+      worker.stderr?.on("data", (chunk: Buffer) => {
+        console.error(`knowledge-search worker: ${chunk.toString().trim()}`);
+      });
+
+      worker.on("error", (err) => {
+        console.error(`knowledge-search: worker error: ${err.message}`);
+      });
+
+      worker.on("exit", (code, signal) => {
+        syncDone = true;
+        if (code === 0 && stdout) {
+          try {
+            const result = JSON.parse(stdout);
+            // Reload the index from disk since the worker updated it
+            index!.loadSync();
+            const changes = result.added + result.updated + result.removed;
+            if (changes > 0) {
+              ctx.ui.setStatus(
+                "knowledge-search",
+                `Index: +${result.added} ~${result.updated} -${result.removed} (${result.size} files)`
+              );
+              setTimeout(() => ctx.ui.setStatus("knowledge-search", ""), 5000);
+            }
+          } catch {
+            // ignore parse errors
+          }
+        } else if (code !== 0 && !workerExitExpected) {
+          // Unexpected exit — restart once
+          console.error(
+            `knowledge-search: worker exited unexpectedly (code=${code}, signal=${signal}), restarting...`
+          );
+          setTimeout(() => {
+            if (!workerExitExpected) spawnWorker();
+          }, 2000);
+        }
+      });
+      worker.unref();
+    }
+
+    spawnWorker();
   });
 
   pi.on("session_shutdown", async () => {
+    workerExitExpected = true;
     watcher?.stop();
+    index?.close();
   });
 
   // ------------------------------------------------------------------
