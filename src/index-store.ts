@@ -473,7 +473,7 @@ export class KnowledgeIndex {
 }
 
 /** Dot product — works as cosine similarity when vectors are pre-normalized. */
-function dotProduct(a: number[], b: number[]): number {
+export function dotProduct(a: number[], b: number[]): number {
   let sum = 0;
   const len = Math.min(a.length, b.length);
   for (let i = 0; i < len; i++) {

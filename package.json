@@ -23,5 +23,14 @@
   "optionalDependencies": {
     "@aws-sdk/client-bedrock-runtime": "3.750.0",
     "@aws-sdk/credential-providers": "3.750.0"
+  },
+  "dependencies": {
+    "tsx": "^4.21.0"
+  },
+  "scripts": {
+    "test": "node --test --import tsx src/**/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0"
   }
 }
