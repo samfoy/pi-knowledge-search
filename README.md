@@ -97,6 +97,52 @@ ollama pull nomic-embed-text
 
 </details>
 
+### Bedrock Knowledge Bases
+
+You can add [Amazon Bedrock Knowledge Bases](https://docs.aws.amazon.com/bedrock/latest/userguide/knowledge-base.html) as additional search sources. These are managed RAG services — Amazon handles chunking, embedding, and vector storage. pi-knowledge-search queries them at search time and merges results with local file results.
+
+Add via command:
+
+```
+/knowledge-add-kb
+```
+
+Or add directly to the config file:
+
+```json
+{
+  "dirs": ["~/notes"],
+  "provider": { "type": "openai" },
+  "knowledgeBases": [
+    {
+      "id": "XXXXXXXXXX",
+      "region": "us-east-1",
+      "profile": "default",
+      "label": "Team docs"
+    }
+  ]
+}
+```
+
+You can use Knowledge Bases alongside local file indexing, or on their own (omit `dirs` and `provider` for KB-only mode).
+
+KB-only config:
+
+```json
+{
+  "knowledgeBases": [
+    {
+      "id": "XXXXXXXXXX",
+      "region": "us-east-1",
+      "profile": "my-work-profile",
+      "label": "Engineering wiki"
+    }
+  ]
+}
+```
+
+Requires the AWS SDK and valid credentials with `bedrock:Retrieve` permissions.
+
 ### Environment variable overrides
 
 Every config field can be overridden via environment variables. This is useful for CI or when you want different settings per shell session. See [env-vars.md](docs/env-vars.md) for the full list.
@@ -115,6 +161,7 @@ The index is stored at `~/.pi/knowledge-search/index.json`.
 | Command | Description |
 |---------|-------------|
 | `/knowledge-search-setup` | Interactive setup wizard |
+| `/knowledge-add-kb` | Add a Bedrock Knowledge Base as a search source |
 | `/knowledge-reindex` | Force a full re-index |
 
 ## Performance

@@ -21,6 +21,7 @@
     "@sinclair/typebox": "*"
   },
   "optionalDependencies": {
+    "@aws-sdk/client-bedrock-agent-runtime": "3.750.0",
     "@aws-sdk/client-bedrock-runtime": "3.750.0",
     "@aws-sdk/credential-providers": "3.750.0"
   },

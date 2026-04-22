@@ -11,9 +11,11 @@ import {
 } from "./config";
 import { createEmbedder } from "./embedder";
 import { KnowledgeIndex } from "./index-store";
+import { BedrockKBSearcher } from "./kb-searcher";
 
 export default function (pi: ExtensionAPI) {
   let index: KnowledgeIndex | null = null;
+  let kbSearcher: BedrockKBSearcher | null = null;
   let currentConfig: Config | null = null;
   let syncDone = false;
   let workerExitExpected = false;
@@ -30,9 +32,20 @@ export default function (pi: ExtensionAPI) {
     }
     if (!currentConfig) return;
 
-    const embedder = createEmbedder(currentConfig.provider, currentConfig.dimensions);
-    index = new KnowledgeIndex(currentConfig, embedder);
-    index.loadSync();
+    if (currentConfig.provider) {
+      const embedder = createEmbedder(currentConfig.provider, currentConfig.dimensions);
+      index = new KnowledgeIndex(currentConfig, embedder);
+      index.loadSync();
+    }
+
+    if (currentConfig.knowledgeBases.length > 0) {
+      kbSearcher = new BedrockKBSearcher(currentConfig.knowledgeBases);
+    }
+
+    if (!index) {
+      syncDone = true;
+      return; // KB-only mode — no local index to sync
+    }
 
     // Sync in a child process so it never blocks the main event loop
     const MAX_WORKER_RESTARTS = 3;
@@ -254,6 +267,75 @@ export default function (pi: ExtensionAPI) {
   });
 
   // ------------------------------------------------------------------
+  // Add Knowledge Base command
+  // ------------------------------------------------------------------
+
+  pi.registerCommand("knowledge-add-kb", {
+    description: "Add a Bedrock Knowledge Base as a search source",
+    handler: async (_args, ctx) => {
+      const kbId = await ctx.ui.input(
+        "Bedrock Knowledge Base ID:",
+        ""
+      );
+      if (!kbId) {
+        ctx.ui.notify("Cancelled.", "info");
+        return;
+      }
+
+      const label = await ctx.ui.input(
+        "Label (optional, for display):",
+        ""
+      );
+
+      const region = await ctx.ui.input(
+        "AWS region:",
+        "us-east-1"
+      );
+
+      const profile = await ctx.ui.input(
+        "AWS profile:",
+        "default"
+      );
+
+      // Load existing config or create minimal one
+      let existing: ConfigFile;
+      try {
+        const loaded = loadConfig();
+        if (loaded) {
+          // Read the raw file to preserve structure
+          const raw = require("fs").readFileSync(getConfigPath(), "utf-8");
+          existing = JSON.parse(raw);
+        } else {
+          existing = {};
+        }
+      } catch {
+        existing = {};
+      }
+
+      if (!existing.knowledgeBases) existing.knowledgeBases = [];
+
+      // Don't add duplicates
+      if (existing.knowledgeBases.some((kb: any) => kb.id === kbId)) {
+        ctx.ui.notify(`KB ${kbId} already configured.`, "warning");
+        return;
+      }
+
+      existing.knowledgeBases.push({
+        id: kbId,
+        region: region || "us-east-1",
+        profile: profile || "default",
+        ...(label ? { label } : {}),
+      });
+
+      saveConfig(existing as ConfigFile);
+      ctx.ui.notify(
+        `Added KB ${kbId}${label ? ` (${label})` : ""}. Run /reload to activate.`,
+        "success"
+      );
+    },
+  });
+
+  // ------------------------------------------------------------------
   // Reindex command
   // ------------------------------------------------------------------
 
@@ -298,19 +380,31 @@ export default function (pi: ExtensionAPI) {
       ),
     }),
     async execute(toolCallId, params, signal) {
-      if (!index || index.size() === 0) {
-        const msg = !index
+      const hasLocalIndex = index && index.size() > 0;
+      const hasKB = !!kbSearcher;
+
+      if (!hasLocalIndex && !hasKB) {
+        const msg = !index && !kbSearcher
           ? 'knowledge-search is not configured. The user can run /knowledge-search-setup to set it up.'
-          : syncDone
-            ? "Index is empty."
-            : "Index is still syncing in the background. Try again in a moment.";
+          : !syncDone && index
+            ? "Index is still syncing in the background. Try again in a moment."
+            : "Index is empty.";
         return { content: [{ type: "text", text: msg }], details: {} };
       }
 
       const limit = Math.min(params.limit ?? 8, 20);
 
       try {
-        const results = await index.search(params.query, limit, signal);
+        // Search local index and Bedrock KBs in parallel
+        const [localResults, kbResults] = await Promise.all([
+          hasLocalIndex ? index!.search(params.query, limit, signal) : [],
+          hasKB ? kbSearcher!.search(params.query, limit, signal) : [],
+        ]);
+
+        // Merge and sort by score, take top N
+        const results = [...localResults, ...kbResults]
+          .sort((a, b) => b.score - a.score)
+          .slice(0, limit);
 
         if (results.length === 0) {
           return {
@@ -334,7 +428,10 @@ export default function (pi: ExtensionAPI) {
           })
           .join("\n\n---\n\n");
 
-        const header = `Found ${results.length} results for "${params.query}" (${index.size()} files, ${index.chunkCount()} chunks indexed):\n\n`;
+        const indexInfo = hasLocalIndex ? `${index!.size()} files, ${index!.chunkCount()} chunks indexed` : "";
+        const kbInfo = hasKB ? `${currentConfig!.knowledgeBases.length} knowledge base(s)` : "";
+        const sourceInfo = [indexInfo, kbInfo].filter(Boolean).join(" + ");
+        const header = `Found ${results.length} results for "${params.query}" (${sourceInfo}):\n\n`;
 
         return {
           content: [{ type: "text", text: header + output }],

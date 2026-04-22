@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { KnowledgeBaseConfig } from "./kb-searcher";
 
 export interface Config {
   /** Directories to index */
@@ -10,10 +11,12 @@ export interface Config {
   excludeDirs: string[];
   /** Embedding dimensions */
   dimensions: number;
-  /** Embedding provider config */
-  provider: ProviderConfig;
+  /** Embedding provider config (required for local file indexing) */
+  provider: ProviderConfig | null;
   /** Where to store the index */
   indexDir: string;
+  /** Optional Bedrock Knowledge Bases to search */
+  knowledgeBases: KnowledgeBaseConfig[];
 }
 
 export type ProviderConfig =
@@ -23,11 +26,12 @@ export type ProviderConfig =
 
 /** Raw shape stored in the config file. */
 export interface ConfigFile {
-  dirs: string[];
+  dirs?: string[];
   fileExtensions?: string[];
   excludeDirs?: string[];
   dimensions?: number;
-  provider:
+  knowledgeBases?: KnowledgeBaseConfig[];
+  provider?:
     | { type: "openai"; apiKey?: string; model?: string }
     | { type: "bedrock"; profile?: string; region?: string; model?: string }
     | { type: "ollama"; url?: string; model?: string };
@@ -56,8 +60,10 @@ export function loadConfig(): Config | null {
     }
   }
 
-  // Check env var fallback for dirs (the one required field)
+  // Check env var fallback for dirs
   const envDirs = process.env.KNOWLEDGE_SEARCH_DIRS;
+
+  const hasKBs = (file?.knowledgeBases?.length ?? 0) > 0;
 
   if (!file && !envDirs) {
     return null; // Not configured yet
@@ -67,11 +73,11 @@ export function loadConfig(): Config | null {
   const home = process.env.HOME || "/tmp";
   const resolvePath = (p: string) => p.replace(/^~/, home);
 
-  const dirs = (envDirs ? envDirs.split(",").map((d) => d.trim()) : file!.dirs)
+  const dirs = (envDirs ? envDirs.split(",").map((d) => d.trim()) : file?.dirs ?? [])
     .map(resolvePath)
     .filter(Boolean);
 
-  if (dirs.length === 0) return null;
+  if (dirs.length === 0 && !hasKBs) return null;
 
   const fileExtensions = envStr("KNOWLEDGE_SEARCH_EXTENSIONS") ?.split(",").map((e) => e.trim()) ??
     file?.fileExtensions ?? [".md", ".txt"];
@@ -83,9 +89,10 @@ export function loadConfig(): Config | null {
     file?.dimensions ?? 512;
 
   const providerType = envStr("KNOWLEDGE_SEARCH_PROVIDER") ??
-    file?.provider?.type ?? "openai";
+    file?.provider?.type;
 
-  let provider: ProviderConfig;
+  let provider: ProviderConfig | null = null;
+  if (providerType) {
   switch (providerType) {
     case "openai": {
       const apiKey =
@@ -154,6 +161,7 @@ export function loadConfig(): Config | null {
         `Unknown provider: "${providerType}". Use "openai", "bedrock", or "ollama".`
       );
   }
+  } // end if (providerType)
 
   const indexDir =
     envStr("KNOWLEDGE_SEARCH_INDEX_DIR") ??
@@ -166,6 +174,7 @@ export function loadConfig(): Config | null {
     dimensions,
     provider,
     indexDir,
+    knowledgeBases: file?.knowledgeBases ?? [],
   };
 }
 
