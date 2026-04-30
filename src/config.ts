@@ -21,6 +21,7 @@ export interface Config {
 
 export type ProviderConfig =
   | { type: "openai"; apiKey: string; model: string }
+  | { type: "openai-compatible"; apiKey?: string; model: string; baseUrl: string }
   | { type: "bedrock"; profile: string; region: string; model: string }
   | { type: "ollama"; url: string; model: string };
 
@@ -33,6 +34,7 @@ export interface ConfigFile {
   knowledgeBases?: KnowledgeBaseConfig[];
   provider?:
     | { type: "openai"; apiKey?: string; model?: string }
+    | { type: "openai-compatible"; apiKey?: string; model?: string; baseUrl?: string }
     | { type: "bedrock"; profile?: string; region?: string; model?: string }
     | { type: "ollama"; url?: string; model?: string };
 }
@@ -116,6 +118,36 @@ export function loadConfig(): Config | null {
       };
       break;
     }
+    case "openai-compatible": {
+      const compatApiKey =
+        envStr("KNOWLEDGE_SEARCH_COMPAT_API_KEY") ??
+        process.env.OPENAI_API_KEY ??
+        (file?.provider?.type === "openai-compatible"
+          ? file.provider.apiKey
+          : undefined);
+      const compatBaseUrl =
+        envStr("KNOWLEDGE_SEARCH_COMPAT_BASE_URL") ??
+        (file?.provider?.type === "openai-compatible"
+          ? file.provider.baseUrl
+          : undefined);
+      if (!compatBaseUrl) {
+        throw new Error(
+          'OpenAI-compatible requires baseUrl. Set KNOWLEDGE_SEARCH_COMPAT_BASE_URL or provide it in your knowledge-search.json config.'
+        );
+      }
+      provider = {
+        type: "openai-compatible",
+        apiKey: compatApiKey,
+        model:
+          envStr("KNOWLEDGE_SEARCH_COMPAT_MODEL") ??
+          (file?.provider?.type === "openai-compatible"
+            ? file.provider.model
+            : undefined) ??
+          "text-embedding-3-small",
+        baseUrl: compatBaseUrl,
+      };
+      break;
+    }
     case "bedrock":
       provider = {
         type: "bedrock",
@@ -158,7 +190,7 @@ export function loadConfig(): Config | null {
       break;
     default:
       throw new Error(
-        `Unknown provider: "${providerType}". Use "openai", "bedrock", or "ollama".`
+        `Unknown provider: "${providerType}". Use "openai", "openai-compatible", "bedrock", or "ollama".`
       );
   }
   } // end if (providerType)
