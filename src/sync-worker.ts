@@ -23,11 +23,20 @@ const embedder = createEmbedder(config.provider, config.dimensions);
 const index = new KnowledgeIndex(config, embedder);
 index.loadSync();
 
-index.sync().then(({ added, updated, removed }) => {
-  const result = JSON.stringify({ added, updated, removed, size: index.size(), chunks: index.chunkCount() });
-  process.stdout.write(result);
-  process.exit(0);
-}).catch((err) => {
-  process.stderr.write(err.message);
-  process.exit(1);
-});
+index
+  .sync()
+  .then(({ added, updated, removed }) => {
+    const result = JSON.stringify({
+      added,
+      updated,
+      removed,
+      size: index.size(),
+      chunks: index.chunkCount(),
+    });
+    process.stdout.write(result);
+    process.exit(0);
+  })
+  .catch((err) => {
+    process.stderr.write(err.message);
+    process.exit(1);
+  });

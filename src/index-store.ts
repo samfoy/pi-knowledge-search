@@ -77,10 +77,7 @@ export class KnowledgeIndex {
       try {
         const raw = fs.readFileSync(indexFile, "utf-8");
         const parsed = JSON.parse(raw) as IndexData;
-        if (
-          parsed.version === INDEX_VERSION &&
-          parsed.dimensions === this.config.dimensions
-        ) {
+        if (parsed.version === INDEX_VERSION && parsed.dimensions === this.config.dimensions) {
           this.data = parsed;
         }
         // Old version or dimension mismatch → start fresh (triggers re-index)
@@ -207,9 +204,7 @@ export class KnowledgeIndex {
         const file = toProcess[fi];
         for (let ci = 0; ci < file.chunks.length; ci++) {
           const chunk = file.chunks[ci];
-          allChunkTexts.push(
-            this.chunkEmbedText(file.relPath, chunk.heading, chunk.text)
-          );
+          allChunkTexts.push(this.chunkEmbedText(file.relPath, chunk.heading, chunk.text));
           chunkMeta.push({ fileIdx: fi, chunkIdx: ci });
         }
       }
@@ -270,11 +265,7 @@ export class KnowledgeIndex {
     await this.sync();
   }
 
-  async search(
-    query: string,
-    limit: number,
-    signal?: AbortSignal
-  ): Promise<SearchResult[]> {
+  async search(query: string, limit: number, signal?: AbortSignal): Promise<SearchResult[]> {
     const queryVector = await this.embedder.embed(query, signal);
 
     const scored: { key: string; absPath: string; score: number }[] = [];
@@ -339,9 +330,7 @@ export class KnowledgeIndex {
     this.removeAllChunks(absPath);
 
     // Embed and store each chunk
-    const texts = chunks.map((c) =>
-      this.chunkEmbedText(relPath, c.heading, c.text)
-    );
+    const texts = chunks.map((c) => this.chunkEmbedText(relPath, c.heading, c.text));
     const vectors = await this.embedder.embedBatch(texts);
 
     for (let i = 0; i < chunks.length; i++) {
@@ -429,10 +418,7 @@ export class KnowledgeIndex {
       const absPath = path.join(currentDir, entry.name);
 
       if (entry.isDirectory()) {
-        if (
-          this.config.excludeDirs.includes(entry.name) ||
-          entry.name.startsWith(".")
-        ) {
+        if (this.config.excludeDirs.includes(entry.name) || entry.name.startsWith(".")) {
           continue;
         }
         this.walkDir(absPath, sourceDir, results);

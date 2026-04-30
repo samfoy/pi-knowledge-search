@@ -72,10 +72,7 @@ describe("chunkMarkdown", () => {
   it("hard-splits a very long single paragraph", () => {
     const longText = "A".repeat(500);
     const chunks = chunkMarkdown(longText, 100);
-    assert.ok(
-      chunks.length > 1,
-      `Expected >1 chunks for long text, got ${chunks.length}`
-    );
+    assert.ok(chunks.length > 1, `Expected >1 chunks for long text, got ${chunks.length}`);
     // All text should be covered (with possible overlap)
     const totalLen = chunks.reduce((sum, c) => sum + c.text.length, 0);
     assert.ok(totalLen >= longText.length, "Hard-split should cover all text");
@@ -142,22 +139,11 @@ describe("chunkMarkdown", () => {
     const chunks = chunkMarkdown(md, 3000, 200);
     // The tiny "Hi." section should be merged with a neighbor
     const tinyChunk = chunks.find((c) => c.text.trim() === "## Tiny\n\nHi.");
-    assert.equal(
-      tinyChunk,
-      undefined,
-      "Tiny chunk should be merged, not standalone"
-    );
+    assert.equal(tinyChunk, undefined, "Tiny chunk should be merged, not standalone");
   });
 
   it("tracks startLine correctly across sections", () => {
-    const md = [
-      "Line 0",
-      "Line 1",
-      "",
-      "## Section at Line 3",
-      "",
-      "Line 5 content",
-    ].join("\n");
+    const md = ["Line 0", "Line 1", "", "## Section at Line 3", "", "Line 5 content"].join("\n");
     const chunks = chunkMarkdown(md, 30);
     // At least verify first chunk starts at line 0
     assert.equal(chunks[0].startLine, 0);
@@ -192,15 +178,7 @@ describe("chunkMarkdown", () => {
 
   it("does NOT split on level 1 headings (# Title)", () => {
     // The HEADING_RE matches #{2,6}, so # should not trigger a split
-    const md = [
-      "# Title",
-      "",
-      "Intro text.",
-      "",
-      "# Another Title",
-      "",
-      "More text.",
-    ].join("\n");
+    const md = ["# Title", "", "Intro text.", "", "# Another Title", "", "More text."].join("\n");
     const chunks = chunkMarkdown(md, 3000);
     // Both # headings should be in the same "intro" section since # doesn't split
     assert.equal(chunks.length, 1);
@@ -211,10 +189,7 @@ describe("chunkMarkdown", () => {
     const md = "Word ".repeat(200); // ~1000 chars
     const chunks = chunkMarkdown(md, 100);
     for (const chunk of chunks) {
-      assert.ok(
-        chunk.text.length <= 100,
-        `Chunk exceeds custom maxSize: ${chunk.text.length}`
-      );
+      assert.ok(chunk.text.length <= 100, `Chunk exceeds custom maxSize: ${chunk.text.length}`);
     }
   });
 

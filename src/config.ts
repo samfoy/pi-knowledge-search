@@ -75,22 +75,26 @@ export function loadConfig(): Config | null {
   const home = process.env.HOME || "/tmp";
   const resolvePath = (p: string) => p.replace(/^~/, home);
 
-  const dirs = (envDirs ? envDirs.split(",").map((d) => d.trim()) : file?.dirs ?? [])
+  const dirs = (envDirs ? envDirs.split(",").map((d) => d.trim()) : (file?.dirs ?? []))
     .map(resolvePath)
     .filter(Boolean);
 
   if (dirs.length === 0 && !hasKBs) return null;
 
-  const fileExtensions = envStr("KNOWLEDGE_SEARCH_EXTENSIONS") ?.split(",").map((e) => e.trim()) ??
+  const fileExtensions = envStr("KNOWLEDGE_SEARCH_EXTENSIONS")
+    ?.split(",")
+    .map((e) => e.trim()) ??
     file?.fileExtensions ?? [".md", ".txt"];
 
-  const excludeDirs = envStr("KNOWLEDGE_SEARCH_EXCLUDE")?.split(",").map((d) => d.trim()) ??
+  const excludeDirs = envStr("KNOWLEDGE_SEARCH_EXCLUDE")
+    ?.split(",")
+    .map((d) => d.trim()) ??
     file?.excludeDirs ?? ["node_modules", ".git", ".obsidian", ".trash"];
 
-  const dimensions = envInt("KNOWLEDGE_SEARCH_DIMENSIONS") ??
-    file?.dimensions ?? 512;
+  const dimensions = envInt("KNOWLEDGE_SEARCH_DIMENSIONS") ?? file?.dimensions ?? 512;
 
-  const providerType = envStr("KNOWLEDGE_SEARCH_PROVIDER") ??
+  const providerType =
+    envStr("KNOWLEDGE_SEARCH_PROVIDER") ??
     file?.provider?.type ??
     // Convenience default: if OPENAI_API_KEY is exported and nothing else
     // is configured, assume the user wants the openai provider.
@@ -98,123 +102,101 @@ export function loadConfig(): Config | null {
 
   let provider: ProviderConfig | null = null;
   if (providerType) {
-  switch (providerType) {
-    case "openai": {
-      // Helpful migration error: if someone set a custom baseUrl on `openai`,
-      // it used to be silently ignored. Steer them to openai-compatible.
-      if (
-        file?.provider?.type === "openai" &&
-        (file.provider as { baseUrl?: unknown }).baseUrl
-      ) {
-        throw new Error(
-          'Custom baseUrl is not supported on provider type "openai" (it would be silently ignored and requests would hit api.openai.com). Change "type" to "openai-compatible" to use a custom endpoint.'
-        );
+    switch (providerType) {
+      case "openai": {
+        // Helpful migration error: if someone set a custom baseUrl on `openai`,
+        // it used to be silently ignored. Steer them to openai-compatible.
+        if (file?.provider?.type === "openai" && (file.provider as { baseUrl?: unknown }).baseUrl) {
+          throw new Error(
+            'Custom baseUrl is not supported on provider type "openai" (it would be silently ignored and requests would hit api.openai.com). Change "type" to "openai-compatible" to use a custom endpoint.'
+          );
+        }
+        const apiKey =
+          envStr("KNOWLEDGE_SEARCH_OPENAI_API_KEY") ??
+          process.env.OPENAI_API_KEY ??
+          (file?.provider?.type === "openai" ? file.provider.apiKey : undefined);
+        if (!apiKey) {
+          throw new Error(
+            "OpenAI API key required. Run /knowledge-search-setup or set OPENAI_API_KEY."
+          );
+        }
+        provider = {
+          type: "openai",
+          apiKey,
+          model:
+            envStr("KNOWLEDGE_SEARCH_OPENAI_MODEL") ??
+            (file?.provider?.type === "openai" ? file.provider.model : undefined) ??
+            "text-embedding-3-small",
+        };
+        break;
       }
-      const apiKey =
-        envStr("KNOWLEDGE_SEARCH_OPENAI_API_KEY") ??
-        process.env.OPENAI_API_KEY ??
-        (file?.provider?.type === "openai" ? file.provider.apiKey : undefined);
-      if (!apiKey) {
-        throw new Error(
-          "OpenAI API key required. Run /knowledge-search-setup or set OPENAI_API_KEY."
-        );
+      case "openai-compatible": {
+        // Intentionally do NOT fall back to OPENAI_API_KEY here — an openai-
+        // compatible endpoint may be a third-party service, and silently sending
+        // the user's real OpenAI key to a foreign host would be a credential leak.
+        // Users must set KNOWLEDGE_SEARCH_COMPAT_API_KEY explicitly (or leave
+        // unset for runners like llama.cpp that don't require auth).
+        const compatApiKey =
+          envStr("KNOWLEDGE_SEARCH_COMPAT_API_KEY") ??
+          (file?.provider?.type === "openai-compatible" ? file.provider.apiKey : undefined);
+        const compatBaseUrl =
+          envStr("KNOWLEDGE_SEARCH_COMPAT_BASE_URL") ??
+          (file?.provider?.type === "openai-compatible" ? file.provider.baseUrl : undefined);
+        if (!compatBaseUrl) {
+          throw new Error(
+            "OpenAI-compatible requires baseUrl. Set KNOWLEDGE_SEARCH_COMPAT_BASE_URL or provide it in your knowledge-search.json config."
+          );
+        }
+        provider = {
+          type: "openai-compatible",
+          apiKey: compatApiKey,
+          model:
+            envStr("KNOWLEDGE_SEARCH_COMPAT_MODEL") ??
+            (file?.provider?.type === "openai-compatible" ? file.provider.model : undefined) ??
+            "text-embedding-3-small",
+          baseUrl: compatBaseUrl,
+        };
+        break;
       }
-      provider = {
-        type: "openai",
-        apiKey,
-        model:
-          envStr("KNOWLEDGE_SEARCH_OPENAI_MODEL") ??
-          (file?.provider?.type === "openai"
-            ? file.provider.model
-            : undefined) ??
-          "text-embedding-3-small",
-      };
-      break;
+      case "bedrock":
+        provider = {
+          type: "bedrock",
+          profile:
+            envStr("KNOWLEDGE_SEARCH_BEDROCK_PROFILE") ??
+            (file?.provider?.type === "bedrock" ? file.provider.profile : undefined) ??
+            "default",
+          region:
+            envStr("KNOWLEDGE_SEARCH_BEDROCK_REGION") ??
+            (file?.provider?.type === "bedrock" ? file.provider.region : undefined) ??
+            "us-east-1",
+          model:
+            envStr("KNOWLEDGE_SEARCH_BEDROCK_MODEL") ??
+            (file?.provider?.type === "bedrock" ? file.provider.model : undefined) ??
+            "amazon.titan-embed-text-v2:0",
+        };
+        break;
+      case "ollama":
+        provider = {
+          type: "ollama",
+          url:
+            envStr("KNOWLEDGE_SEARCH_OLLAMA_URL") ??
+            (file?.provider?.type === "ollama" ? file.provider.url : undefined) ??
+            "http://localhost:11434",
+          model:
+            envStr("KNOWLEDGE_SEARCH_OLLAMA_MODEL") ??
+            (file?.provider?.type === "ollama" ? file.provider.model : undefined) ??
+            "nomic-embed-text",
+        };
+        break;
+      default:
+        throw new Error(
+          `Unknown provider: "${providerType}". Use "openai", "openai-compatible", "bedrock", or "ollama".`
+        );
     }
-    case "openai-compatible": {
-      // Intentionally do NOT fall back to OPENAI_API_KEY here — an openai-
-      // compatible endpoint may be a third-party service, and silently sending
-      // the user's real OpenAI key to a foreign host would be a credential leak.
-      // Users must set KNOWLEDGE_SEARCH_COMPAT_API_KEY explicitly (or leave
-      // unset for runners like llama.cpp that don't require auth).
-      const compatApiKey =
-        envStr("KNOWLEDGE_SEARCH_COMPAT_API_KEY") ??
-        (file?.provider?.type === "openai-compatible"
-          ? file.provider.apiKey
-          : undefined);
-      const compatBaseUrl =
-        envStr("KNOWLEDGE_SEARCH_COMPAT_BASE_URL") ??
-        (file?.provider?.type === "openai-compatible"
-          ? file.provider.baseUrl
-          : undefined);
-      if (!compatBaseUrl) {
-        throw new Error(
-          'OpenAI-compatible requires baseUrl. Set KNOWLEDGE_SEARCH_COMPAT_BASE_URL or provide it in your knowledge-search.json config.'
-        );
-      }
-      provider = {
-        type: "openai-compatible",
-        apiKey: compatApiKey,
-        model:
-          envStr("KNOWLEDGE_SEARCH_COMPAT_MODEL") ??
-          (file?.provider?.type === "openai-compatible"
-            ? file.provider.model
-            : undefined) ??
-          "text-embedding-3-small",
-        baseUrl: compatBaseUrl,
-      };
-      break;
-    }
-    case "bedrock":
-      provider = {
-        type: "bedrock",
-        profile:
-          envStr("KNOWLEDGE_SEARCH_BEDROCK_PROFILE") ??
-          (file?.provider?.type === "bedrock"
-            ? file.provider.profile
-            : undefined) ??
-          "default",
-        region:
-          envStr("KNOWLEDGE_SEARCH_BEDROCK_REGION") ??
-          (file?.provider?.type === "bedrock"
-            ? file.provider.region
-            : undefined) ??
-          "us-east-1",
-        model:
-          envStr("KNOWLEDGE_SEARCH_BEDROCK_MODEL") ??
-          (file?.provider?.type === "bedrock"
-            ? file.provider.model
-            : undefined) ??
-          "amazon.titan-embed-text-v2:0",
-      };
-      break;
-    case "ollama":
-      provider = {
-        type: "ollama",
-        url:
-          envStr("KNOWLEDGE_SEARCH_OLLAMA_URL") ??
-          (file?.provider?.type === "ollama"
-            ? file.provider.url
-            : undefined) ??
-          "http://localhost:11434",
-        model:
-          envStr("KNOWLEDGE_SEARCH_OLLAMA_MODEL") ??
-          (file?.provider?.type === "ollama"
-            ? file.provider.model
-            : undefined) ??
-          "nomic-embed-text",
-      };
-      break;
-    default:
-      throw new Error(
-        `Unknown provider: "${providerType}". Use "openai", "openai-compatible", "bedrock", or "ollama".`
-      );
-  }
   } // end if (providerType)
 
   const indexDir =
-    envStr("KNOWLEDGE_SEARCH_INDEX_DIR") ??
-    path.join(home, ".pi", "knowledge-search");
+    envStr("KNOWLEDGE_SEARCH_INDEX_DIR") ?? path.join(home, ".pi", "knowledge-search");
 
   return {
     dirs,
