@@ -13,6 +13,7 @@
  * Very large markdown files (>= LARGE_FILE_FAST_PATH_CHARS) fall back to a
  * linear regex + paragraph splitter to keep indexing throughput responsive.
  */
+import remarkFrontmatter from "remark-frontmatter";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
 
@@ -26,6 +27,11 @@ export interface Chunk {
   /** Character offset in original content */
   charOffset: number;
 }
+
+/** Shared markdown parser configured to recognise YAML/TOML frontmatter blocks
+ *  so that their closing `---` / `+++` fences aren't misread as setext heading
+ *  underlines for the preceding line. */
+const markdownProcessor = unified().use(remarkParse).use(remarkFrontmatter, ["yaml", "toml"]);
 
 interface Section {
   text: string;
@@ -209,7 +215,7 @@ function headingText(node: any): string {
 
 /** Split content into sections by level-2+ markdown headings. */
 function splitByHeadings(content: string): Section[] {
-  const tree = unified().use(remarkParse).parse(content) as any;
+  const tree = markdownProcessor.parse(content) as any;
   const starts = lineStartOffsets(content);
   const headings = (tree.children ?? [])
     .filter((node: any) => node.type === "heading" && node.depth >= 2)
@@ -258,7 +264,7 @@ function splitByHeadings(content: string): Section[] {
  */
 function splitByBlocks(section: Section, maxChunkSize: number): Chunk[] {
   const text = section.text;
-  const tree = unified().use(remarkParse).parse(text) as any;
+  const tree = markdownProcessor.parse(text) as any;
   const starts = lineStartOffsets(text);
 
   const blocks: OffsetRange[] = (tree.children ?? [])

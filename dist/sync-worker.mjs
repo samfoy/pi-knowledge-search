@@ -324,8 +324,10 @@ import * as fs2 from "node:fs";
 import * as path2 from "node:path";
 
 // src/chunker.ts
+import remarkFrontmatter from "remark-frontmatter";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
+var markdownProcessor = unified().use(remarkParse).use(remarkFrontmatter, ["yaml", "toml"]);
 var LARGE_FILE_FAST_PATH_CHARS = 12e4;
 function chunkMarkdown(content, maxChunkSize = 3e3, minChunkSize = 200) {
   if (!content || content.trim().length === 0) return [];
@@ -445,7 +447,7 @@ function headingText(node) {
   return node.children.map((child) => headingText(child)).join("");
 }
 function splitByHeadings(content) {
-  const tree = unified().use(remarkParse).parse(content);
+  const tree = markdownProcessor.parse(content);
   const starts = lineStartOffsets(content);
   const headings = (tree.children ?? []).filter((node) => node.type === "heading" && node.depth >= 2).map((node) => {
     const line = node.position?.start?.line;
@@ -482,7 +484,7 @@ function splitByHeadings(content) {
 }
 function splitByBlocks(section, maxChunkSize) {
   const text = section.text;
-  const tree = unified().use(remarkParse).parse(text);
+  const tree = markdownProcessor.parse(text);
   const starts = lineStartOffsets(text);
   const blocks = (tree.children ?? []).map((node) => {
     const startLine = node.position?.start?.line;

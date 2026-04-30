@@ -299,6 +299,50 @@ describe("chunkMarkdown", () => {
     assert.ok(chunks[0].text.includes("## Tiny Second"));
   });
 
+  it("does not treat the closing --- of YAML frontmatter as a setext heading", () => {
+    // Without remark-frontmatter, the closing `---` of a YAML frontmatter
+    // block gets parsed as a setext heading underline for the previous line,
+    // producing a phantom heading named after the last frontmatter key.
+    const md = [
+      "---",
+      "tags: [notes, moc]",
+      "type: moc",
+      "---",
+      "",
+      "# Real Title",
+      "",
+      "Real intro paragraph.",
+      "",
+      "## First Section",
+      "",
+      "Body for first section.",
+    ].join("\n");
+
+    const chunks = chunkMarkdown(md, 40);
+    const headings = chunks.map((c) => c.heading);
+    assert.ok(headings.includes("First Section"), `expected 'First Section' in ${JSON.stringify(headings)}`);
+    // No chunk should claim the YAML body as its heading.
+    assert.ok(!headings.some((h) => h.includes("type: moc")));
+    assert.ok(!headings.some((h) => h.includes("tags:")));
+  });
+
+  it("does not treat the closing +++ of TOML frontmatter as a setext heading", () => {
+    const md = [
+      "+++",
+      "title = 'x'",
+      "+++",
+      "",
+      "## First Section",
+      "",
+      "Body for first section.",
+    ].join("\n");
+
+    const chunks = chunkMarkdown(md, 40);
+    const headings = chunks.map((c) => c.heading);
+    assert.ok(headings.includes("First Section"));
+    assert.ok(!headings.some((h) => h.includes("title")));
+  });
+
   it("uses fast path for very large files (>= 120k chars) without regressing basics", () => {
     // Build a large file that exceeds the LARGE_FILE_FAST_PATH_CHARS threshold.
     const section = [
