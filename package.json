@@ -1,6 +1,6 @@
 {
   "name": "pi-knowledge-search",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Semantic search over local files for pi. Indexes a directory of text files, watches for changes, and exposes a knowledge_search tool to the LLM.",
   "keywords": [
     "pi-package",
