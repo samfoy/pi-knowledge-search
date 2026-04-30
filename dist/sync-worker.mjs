@@ -24,7 +24,9 @@ function loadConfig() {
   const fileExtensions = envStr("KNOWLEDGE_SEARCH_EXTENSIONS")?.split(",").map((e) => e.trim()) ?? file?.fileExtensions ?? [".md", ".txt"];
   const excludeDirs = envStr("KNOWLEDGE_SEARCH_EXCLUDE")?.split(",").map((d) => d.trim()) ?? file?.excludeDirs ?? ["node_modules", ".git", ".obsidian", ".trash"];
   const dimensions = envInt("KNOWLEDGE_SEARCH_DIMENSIONS") ?? file?.dimensions ?? 512;
-  const providerType = envStr("KNOWLEDGE_SEARCH_PROVIDER") ?? file?.provider?.type;
+  const providerType = envStr("KNOWLEDGE_SEARCH_PROVIDER") ?? file?.provider?.type ?? // Convenience default: if OPENAI_API_KEY is exported and nothing else
+  // is configured, assume the user wants the openai provider.
+  (process.env.OPENAI_API_KEY ? "openai" : void 0);
   let provider = null;
   if (providerType) {
     switch (providerType) {

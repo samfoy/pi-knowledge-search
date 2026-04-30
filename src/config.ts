@@ -91,7 +91,10 @@ export function loadConfig(): Config | null {
     file?.dimensions ?? 512;
 
   const providerType = envStr("KNOWLEDGE_SEARCH_PROVIDER") ??
-    file?.provider?.type;
+    file?.provider?.type ??
+    // Convenience default: if OPENAI_API_KEY is exported and nothing else
+    // is configured, assume the user wants the openai provider.
+    (process.env.OPENAI_API_KEY ? "openai" : undefined);
 
   let provider: ProviderConfig | null = null;
   if (providerType) {
