@@ -112,13 +112,14 @@ describe("config", () => {
     );
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    assert.deepStrictEqual(config!.dirs, ["/tmp/test-docs"]);
-    assert.deepStrictEqual(config!.fileExtensions, [".md"]);
-    assert.equal(config!.dimensions, 256);
-    assert.equal(config!.provider.type, "openai");
-    if (config!.provider.type === "openai") {
-      assert.equal(config!.provider.apiKey, "sk-test-key-123");
+    assert.ok(config);
+    assert.ok(config.provider);
+    assert.deepStrictEqual(config.dirs, ["/tmp/test-docs"]);
+    assert.deepStrictEqual(config.fileExtensions, [".md"]);
+    assert.equal(config.dimensions, 256);
+    assert.equal(config.provider.type, "openai");
+    if (config.provider.type === "openai") {
+      assert.equal(config.provider.apiKey, "sk-test-key-123");
     }
   });
 
@@ -133,11 +134,12 @@ describe("config", () => {
     process.env.OPENAI_API_KEY = "sk-env-key";
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    assert.deepStrictEqual(config!.dirs, ["/tmp/dir-a", "/tmp/dir-b"]);
-    assert.equal(config!.provider.type, "openai");
-    if (config!.provider.type === "openai") {
-      assert.equal(config!.provider.apiKey, "sk-env-key");
+    assert.ok(config);
+    assert.ok(config.provider);
+    assert.deepStrictEqual(config.dirs, ["/tmp/dir-a", "/tmp/dir-b"]);
+    assert.equal(config.provider.type, "openai");
+    if (config.provider.type === "openai") {
+      assert.equal(config.provider.apiKey, "sk-env-key");
     }
   });
 
@@ -151,13 +153,13 @@ describe("config", () => {
     );
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    assert.deepStrictEqual(config!.fileExtensions, [".md", ".txt"]);
-    assert.ok(config!.excludeDirs.includes("node_modules"));
-    assert.ok(config!.excludeDirs.includes(".git"));
-    assert.ok(config!.excludeDirs.includes(".obsidian"));
-    assert.ok(config!.excludeDirs.includes(".trash"));
-    assert.equal(config!.dimensions, 512);
+    assert.ok(config);
+    assert.deepStrictEqual(config.fileExtensions, [".md", ".txt"]);
+    assert.ok(config.excludeDirs.includes("node_modules"));
+    assert.ok(config.excludeDirs.includes(".git"));
+    assert.ok(config.excludeDirs.includes(".obsidian"));
+    assert.ok(config.excludeDirs.includes(".trash"));
+    assert.equal(config.dimensions, 512);
   });
 
   it("resolves ~ in directory paths", () => {
@@ -174,8 +176,8 @@ describe("config", () => {
 
     try {
       const config = loadConfig();
-      assert.notEqual(config, null);
-      assert.deepStrictEqual(config!.dirs, ["/home/testuser/Documents/notes"]);
+      assert.ok(config);
+      assert.deepStrictEqual(config.dirs, ["/home/testuser/Documents/notes"]);
     } finally {
       process.env.HOME = originalHome;
     }
@@ -208,11 +210,12 @@ describe("config", () => {
     );
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    assert.equal(config!.provider.type, "bedrock");
-    if (config!.provider.type === "bedrock") {
-      assert.equal(config!.provider.profile, "my-profile");
-      assert.equal(config!.provider.region, "us-west-2");
+    assert.ok(config);
+    assert.ok(config.provider);
+    assert.equal(config.provider.type, "bedrock");
+    if (config.provider.type === "bedrock") {
+      assert.equal(config.provider.profile, "my-profile");
+      assert.equal(config.provider.region, "us-west-2");
     }
   });
 
@@ -230,11 +233,12 @@ describe("config", () => {
     );
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    assert.equal(config!.provider.type, "ollama");
-    if (config!.provider.type === "ollama") {
-      assert.equal(config!.provider.url, "http://localhost:11434");
-      assert.equal(config!.provider.model, "nomic-embed-text");
+    assert.ok(config);
+    assert.ok(config.provider);
+    assert.equal(config.provider.type, "ollama");
+    if (config.provider.type === "ollama") {
+      assert.equal(config.provider.url, "http://localhost:11434");
+      assert.equal(config.provider.model, "nomic-embed-text");
     }
   });
 
@@ -263,9 +267,9 @@ describe("config", () => {
     process.env.KNOWLEDGE_SEARCH_DIMENSIONS = "1024";
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    assert.deepStrictEqual(config!.dirs, ["/tmp/env-dirs"]);
-    assert.equal(config!.dimensions, 1024);
+    assert.ok(config);
+    assert.deepStrictEqual(config.dirs, ["/tmp/env-dirs"]);
+    assert.equal(config.dimensions, 1024);
   });
 
   it("env var overrides provider API key", () => {
@@ -279,9 +283,10 @@ describe("config", () => {
     process.env.KNOWLEDGE_SEARCH_OPENAI_API_KEY = "sk-env-override";
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    if (config!.provider.type === "openai") {
-      assert.equal(config!.provider.apiKey, "sk-env-override");
+    assert.ok(config);
+    assert.ok(config.provider);
+    if (config.provider.type === "openai") {
+      assert.equal(config.provider.apiKey, "sk-env-override");
     }
   });
 
@@ -321,11 +326,12 @@ describe("config", () => {
     );
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    if (config!.provider.type === "bedrock") {
-      assert.equal(config!.provider.profile, "default");
-      assert.equal(config!.provider.region, "us-east-1");
-      assert.equal(config!.provider.model, "amazon.titan-embed-text-v2:0");
+    assert.ok(config);
+    assert.ok(config.provider);
+    if (config.provider.type === "bedrock") {
+      assert.equal(config.provider.profile, "default");
+      assert.equal(config.provider.region, "us-east-1");
+      assert.equal(config.provider.model, "amazon.titan-embed-text-v2:0");
     }
   });
 
@@ -339,10 +345,11 @@ describe("config", () => {
     );
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    if (config!.provider.type === "ollama") {
-      assert.equal(config!.provider.url, "http://localhost:11434");
-      assert.equal(config!.provider.model, "nomic-embed-text");
+    assert.ok(config);
+    assert.ok(config.provider);
+    if (config.provider.type === "ollama") {
+      assert.equal(config.provider.url, "http://localhost:11434");
+      assert.equal(config.provider.model, "nomic-embed-text");
     }
   });
 
@@ -365,12 +372,13 @@ describe("config", () => {
     );
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    assert.equal(config!.provider.type, "openai-compatible");
-    if (config!.provider.type === "openai-compatible") {
-      assert.equal(config!.provider.baseUrl, "http://127.0.0.1:8080");
-      assert.equal(config!.provider.apiKey, "local-key");
-      assert.equal(config!.provider.model, "qwen3-embeddings");
+    assert.ok(config);
+    assert.ok(config.provider);
+    assert.equal(config.provider.type, "openai-compatible");
+    if (config.provider.type === "openai-compatible") {
+      assert.equal(config.provider.baseUrl, "http://127.0.0.1:8080");
+      assert.equal(config.provider.apiKey, "local-key");
+      assert.equal(config.provider.model, "qwen3-embeddings");
     }
   });
 
@@ -387,10 +395,11 @@ describe("config", () => {
     );
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    if (config!.provider.type === "openai-compatible") {
-      assert.equal(config!.provider.model, "text-embedding-3-small");
-      assert.equal(config!.provider.apiKey, undefined);
+    assert.ok(config);
+    assert.ok(config.provider);
+    if (config.provider.type === "openai-compatible") {
+      assert.equal(config.provider.model, "text-embedding-3-small");
+      assert.equal(config.provider.apiKey, undefined);
     }
   });
 
@@ -424,11 +433,12 @@ describe("config", () => {
     process.env.KNOWLEDGE_SEARCH_COMPAT_MODEL = "env-model";
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    if (config!.provider.type === "openai-compatible") {
-      assert.equal(config!.provider.baseUrl, "http://env-host:9999");
-      assert.equal(config!.provider.apiKey, "env-key");
-      assert.equal(config!.provider.model, "env-model");
+    assert.ok(config);
+    assert.ok(config.provider);
+    if (config.provider.type === "openai-compatible") {
+      assert.equal(config.provider.baseUrl, "http://env-host:9999");
+      assert.equal(config.provider.apiKey, "env-key");
+      assert.equal(config.provider.model, "env-model");
     }
   });
 
@@ -446,10 +456,11 @@ describe("config", () => {
     process.env.OPENAI_API_KEY = "sk-real-openai-key";
 
     const config = loadConfig();
-    assert.notEqual(config, null);
-    if (config!.provider.type === "openai-compatible") {
+    assert.ok(config);
+    assert.ok(config.provider);
+    if (config.provider.type === "openai-compatible") {
       // Real OpenAI key must NOT be bled into third-party endpoint
-      assert.equal(config!.provider.apiKey, undefined);
+      assert.equal(config.provider.apiKey, undefined);
     }
   });
 

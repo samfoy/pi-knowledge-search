@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { loadConfig } from "./config";
-import { createEmbedder } from "./embedder";
-import { KnowledgeIndex } from "./index-store";
+import { loadConfig } from "./config.js";
+import { createEmbedder } from "./embedder.js";
+import { KnowledgeIndex } from "./index-store.js";
 
 // Report uncaught errors back to parent before exiting
 process.on("uncaughtException", (err) => {
@@ -15,7 +15,7 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const config = loadConfig();
-if (!config) {
+if (!config || !config.provider) {
   process.exit(0);
 }
 

@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { Config } from "./config";
-import type { Embedder } from "./embedder";
-import { chunkMarkdown, type Chunk } from "./chunker";
+import type { Config } from "./config.js";
+import type { Embedder } from "./embedder.js";
+import { chunkMarkdown, type Chunk } from "./chunker.js";
 
 interface IndexEntry {
   /** Relative path from its source directory root */

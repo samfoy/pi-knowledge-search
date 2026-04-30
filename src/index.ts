@@ -1,11 +1,12 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "@sinclair/typebox";
 import { fork } from "node:child_process";
+import * as fs from "node:fs";
 import { join } from "node:path";
-import { loadConfig, saveConfig, getConfigPath, type Config, type ConfigFile } from "./config";
-import { createEmbedder } from "./embedder";
-import { KnowledgeIndex } from "./index-store";
-import { BedrockKBSearcher } from "./kb-searcher";
+import { loadConfig, saveConfig, getConfigPath, type Config, type ConfigFile } from "./config.js";
+import { createEmbedder } from "./embedder.js";
+import { KnowledgeIndex } from "./index-store.js";
+import { BedrockKBSearcher } from "./kb-searcher.js";
 
 export default function (pi: ExtensionAPI) {
   let index: KnowledgeIndex | null = null;
@@ -236,7 +237,7 @@ export default function (pi: ExtensionAPI) {
 
       // Save and confirm
       saveConfig(configFile!);
-      ctx.ui.notify(`Config saved to ${getConfigPath()}. Run /reload to activate.`, "success");
+      ctx.ui.notify(`Config saved to ${getConfigPath()}. Run /reload to activate.`, "info");
     },
   });
 
@@ -265,7 +266,7 @@ export default function (pi: ExtensionAPI) {
         const loaded = loadConfig();
         if (loaded) {
           // Read the raw file to preserve structure
-          const raw = require("fs").readFileSync(getConfigPath(), "utf-8");
+          const raw = fs.readFileSync(getConfigPath(), "utf-8");
           existing = JSON.parse(raw);
         } else {
           existing = {};
@@ -292,7 +293,7 @@ export default function (pi: ExtensionAPI) {
       saveConfig(existing as ConfigFile);
       ctx.ui.notify(
         `Added KB ${kbId}${label ? ` (${label})` : ""}. Run /reload to activate.`,
-        "success"
+        "info"
       );
     },
   });
@@ -313,7 +314,7 @@ export default function (pi: ExtensionAPI) {
         await index.rebuild();
         ctx.ui.notify(
           `Re-indexed: ${index.size()} files (${index.chunkCount()} chunks)`,
-          "success"
+          "info"
         );
       } catch (err: any) {
         ctx.ui.notify(`Re-index failed: ${err.message}`, "error");
@@ -325,7 +326,17 @@ export default function (pi: ExtensionAPI) {
   // Search tool
   // ------------------------------------------------------------------
 
-  pi.registerTool({
+  const searchParams = Type.Object({
+    query: Type.String({ description: "Natural language search query" }),
+    limit: Type.Optional(
+      Type.Number({
+        description: "Max results to return (default 8, max 20)",
+      })
+    ),
+  });
+  type SearchDetails = { resultCount?: number; indexSize?: number };
+
+  pi.registerTool<typeof searchParams, SearchDetails>({
     name: "knowledge_search",
     label: "Knowledge Search",
     description:
@@ -333,14 +344,7 @@ export default function (pi: ExtensionAPI) {
     promptGuidelines: [
       'Use knowledge_search for conceptual queries (e.g. "how did we handle X", "what was decided about Y"). Use grep/read for exact text or known filenames.',
     ],
-    parameters: Type.Object({
-      query: Type.String({ description: "Natural language search query" }),
-      limit: Type.Optional(
-        Type.Number({
-          description: "Max results to return (default 8, max 20)",
-        })
-      ),
-    }),
+    parameters: searchParams,
     async execute(toolCallId, params, signal) {
       const hasLocalIndex = index && index.size() > 0;
       const hasKB = !!kbSearcher;
@@ -400,7 +404,7 @@ export default function (pi: ExtensionAPI) {
 
         return {
           content: [{ type: "text", text: header + output }],
-          details: { resultCount: results.length, indexSize: index.size() },
+          details: { resultCount: results.length, indexSize: index?.size() ?? 0 },
         };
       } catch (err: any) {
         throw new Error(`knowledge-search failed: ${err.message}`);
