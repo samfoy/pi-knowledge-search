@@ -1,4 +1,4 @@
-import type { ProviderConfig } from "./config";
+import type { ProviderConfig } from "./config.js";
 
 /**
  * Unified embedding interface. Implementations for OpenAI, OpenAI-compatible,

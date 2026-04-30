@@ -112,19 +112,9 @@ function createEmbedder(config2, dimensions) {
     case "openai":
       return new OpenAIEmbedder(config2.apiKey, config2.model, dimensions, void 0);
     case "openai-compatible":
-      return new OpenAIEmbedder(
-        config2.apiKey ?? "",
-        config2.model,
-        dimensions,
-        config2.baseUrl
-      );
+      return new OpenAIEmbedder(config2.apiKey ?? "", config2.model, dimensions, config2.baseUrl);
     case "bedrock":
-      return new BedrockEmbedder(
-        config2.profile,
-        config2.region,
-        config2.model,
-        dimensions
-      );
+      return new BedrockEmbedder(config2.profile, config2.region, config2.model, dimensions);
     case "ollama":
       return new OllamaEmbedder(config2.url, config2.model);
   }
@@ -161,9 +151,7 @@ async function parallelMap(items, fn, concurrency, signal) {
       results[idx] = await fn(items[idx], idx);
     }
   };
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
-  );
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
   return results;
 }
 var OpenAIEmbedder = class {
@@ -258,9 +246,7 @@ var BedrockEmbedder = class {
         try {
           return await this.callBedrock(client, text);
         } catch (err) {
-          console.error(
-            `Bedrock embedding failed (${text.slice(0, 50)}...): ${err.message}`
-          );
+          console.error(`Bedrock embedding failed (${text.slice(0, 50)}...): ${err.message}`);
           return null;
         }
       },
@@ -323,9 +309,7 @@ var OllamaEmbedder = class {
         try {
           return await this.embed(text, signal);
         } catch (err) {
-          console.error(
-            `Ollama embedding failed (${text.slice(0, 50)}...): ${err.message}`
-          );
+          console.error(`Ollama embedding failed (${text.slice(0, 50)}...): ${err.message}`);
           return null;
         }
       },
@@ -618,9 +602,7 @@ ${chunkText}`;
         const file = toProcess[fi];
         for (let ci = 0; ci < file.chunks.length; ci++) {
           const chunk = file.chunks[ci];
-          allChunkTexts.push(
-            this.chunkEmbedText(file.relPath, chunk.heading, chunk.text)
-          );
+          allChunkTexts.push(this.chunkEmbedText(file.relPath, chunk.heading, chunk.text));
           chunkMeta.push({ fileIdx: fi, chunkIdx: ci });
         }
       }
@@ -716,9 +698,7 @@ ${chunkText}`;
       return;
     }
     this.removeAllChunks(absPath);
-    const texts = chunks.map(
-      (c) => this.chunkEmbedText(relPath, c.heading, c.text)
-    );
+    const texts = chunks.map((c) => this.chunkEmbedText(relPath, c.heading, c.text));
     const vectors = await this.embedder.embedBatch(texts);
     for (let i = 0; i < chunks.length; i++) {
       const vector = vectors[i];
@@ -832,14 +812,20 @@ process.on("unhandledRejection", (reason) => {
   process.exit(1);
 });
 var config = loadConfig();
-if (!config) {
+if (!config || !config.provider) {
   process.exit(0);
 }
 var embedder = createEmbedder(config.provider, config.dimensions);
 var index = new KnowledgeIndex(config, embedder);
 index.loadSync();
 index.sync().then(({ added, updated, removed }) => {
-  const result = JSON.stringify({ added, updated, removed, size: index.size(), chunks: index.chunkCount() });
+  const result = JSON.stringify({
+    added,
+    updated,
+    removed,
+    size: index.size(),
+    chunks: index.chunkCount()
+  });
   process.stdout.write(result);
   process.exit(0);
 }).catch((err) => {

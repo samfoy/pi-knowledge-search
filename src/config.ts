@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { KnowledgeBaseConfig } from "./kb-searcher";
+import type { KnowledgeBaseConfig } from "./kb-searcher.js";
 
 export interface Config {
   /** Directories to index */

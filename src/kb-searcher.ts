@@ -1,4 +1,4 @@
-import type { SearchResult } from "./index-store";
+import type { SearchResult } from "./index-store.js";
 
 export interface KnowledgeBaseConfig {
   /** Bedrock Knowledge Base ID */
