@@ -102,7 +102,7 @@ ollama pull nomic-embed-text
 
 Any server that exposes an OpenAI-compatible `/v1/embeddings` endpoint works:
 [llama.cpp](https://github.com/ggml-org/llama.cpp), [vLLM](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html),
-[litellm](https://docs.litellm.ai/), [Ollama API mode](https://ollama.ai/blog/openai-compatiblety-blog-post), etc.
+[litellm](https://docs.litellm.ai/), [Ollama's OpenAI-compatibility mode](https://ollama.com/blog/openai-compatibility), etc.
 
 ```json
 {

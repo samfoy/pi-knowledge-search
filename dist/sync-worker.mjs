@@ -29,6 +29,11 @@ function loadConfig() {
   if (providerType) {
     switch (providerType) {
       case "openai": {
+        if (file?.provider?.type === "openai" && file.provider.baseUrl) {
+          throw new Error(
+            'Custom baseUrl is not supported on provider type "openai" (it would be silently ignored and requests would hit api.openai.com). Change "type" to "openai-compatible" to use a custom endpoint.'
+          );
+        }
         const apiKey = envStr("KNOWLEDGE_SEARCH_OPENAI_API_KEY") ?? process.env.OPENAI_API_KEY ?? (file?.provider?.type === "openai" ? file.provider.apiKey : void 0);
         if (!apiKey) {
           throw new Error(
@@ -43,7 +48,7 @@ function loadConfig() {
         break;
       }
       case "openai-compatible": {
-        const compatApiKey = envStr("KNOWLEDGE_SEARCH_COMPAT_API_KEY") ?? process.env.OPENAI_API_KEY ?? (file?.provider?.type === "openai-compatible" ? file.provider.apiKey : void 0);
+        const compatApiKey = envStr("KNOWLEDGE_SEARCH_COMPAT_API_KEY") ?? (file?.provider?.type === "openai-compatible" ? file.provider.apiKey : void 0);
         const compatBaseUrl = envStr("KNOWLEDGE_SEARCH_COMPAT_BASE_URL") ?? (file?.provider?.type === "openai-compatible" ? file.provider.baseUrl : void 0);
         if (!compatBaseUrl) {
           throw new Error(

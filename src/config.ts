@@ -97,6 +97,16 @@ export function loadConfig(): Config | null {
   if (providerType) {
   switch (providerType) {
     case "openai": {
+      // Helpful migration error: if someone set a custom baseUrl on `openai`,
+      // it used to be silently ignored. Steer them to openai-compatible.
+      if (
+        file?.provider?.type === "openai" &&
+        (file.provider as { baseUrl?: unknown }).baseUrl
+      ) {
+        throw new Error(
+          'Custom baseUrl is not supported on provider type "openai" (it would be silently ignored and requests would hit api.openai.com). Change "type" to "openai-compatible" to use a custom endpoint.'
+        );
+      }
       const apiKey =
         envStr("KNOWLEDGE_SEARCH_OPENAI_API_KEY") ??
         process.env.OPENAI_API_KEY ??
@@ -119,9 +129,13 @@ export function loadConfig(): Config | null {
       break;
     }
     case "openai-compatible": {
+      // Intentionally do NOT fall back to OPENAI_API_KEY here — an openai-
+      // compatible endpoint may be a third-party service, and silently sending
+      // the user's real OpenAI key to a foreign host would be a credential leak.
+      // Users must set KNOWLEDGE_SEARCH_COMPAT_API_KEY explicitly (or leave
+      // unset for runners like llama.cpp that don't require auth).
       const compatApiKey =
         envStr("KNOWLEDGE_SEARCH_COMPAT_API_KEY") ??
-        process.env.OPENAI_API_KEY ??
         (file?.provider?.type === "openai-compatible"
           ? file.provider.apiKey
           : undefined);

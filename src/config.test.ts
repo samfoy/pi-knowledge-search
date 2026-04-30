@@ -21,6 +21,9 @@ const envKeys = [
   "KNOWLEDGE_SEARCH_PROVIDER",
   "KNOWLEDGE_SEARCH_OPENAI_API_KEY",
   "KNOWLEDGE_SEARCH_OPENAI_MODEL",
+  "KNOWLEDGE_SEARCH_COMPAT_API_KEY",
+  "KNOWLEDGE_SEARCH_COMPAT_BASE_URL",
+  "KNOWLEDGE_SEARCH_COMPAT_MODEL",
   "KNOWLEDGE_SEARCH_BEDROCK_PROFILE",
   "KNOWLEDGE_SEARCH_BEDROCK_REGION",
   "KNOWLEDGE_SEARCH_BEDROCK_MODEL",
@@ -339,5 +342,128 @@ describe("config", () => {
       assert.equal(config!.provider.url, "http://localhost:11434");
       assert.equal(config!.provider.model, "nomic-embed-text");
     }
+  });
+
+  // ---------------------------------------------------------------------
+  // openai-compatible provider
+  // ---------------------------------------------------------------------
+
+  it("configures openai-compatible provider from file", () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        dirs: ["/tmp/docs"],
+        provider: {
+          type: "openai-compatible",
+          baseUrl: "http://127.0.0.1:8080",
+          apiKey: "local-key",
+          model: "qwen3-embeddings",
+        },
+      })
+    );
+
+    const config = loadConfig();
+    assert.notEqual(config, null);
+    assert.equal(config!.provider.type, "openai-compatible");
+    if (config!.provider.type === "openai-compatible") {
+      assert.equal(config!.provider.baseUrl, "http://127.0.0.1:8080");
+      assert.equal(config!.provider.apiKey, "local-key");
+      assert.equal(config!.provider.model, "qwen3-embeddings");
+    }
+  });
+
+  it("openai-compatible provider defaults model when omitted", () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        dirs: ["/tmp/docs"],
+        provider: {
+          type: "openai-compatible",
+          baseUrl: "http://127.0.0.1:8080",
+        },
+      })
+    );
+
+    const config = loadConfig();
+    assert.notEqual(config, null);
+    if (config!.provider.type === "openai-compatible") {
+      assert.equal(config!.provider.model, "text-embedding-3-small");
+      assert.equal(config!.provider.apiKey, undefined);
+    }
+  });
+
+  it("openai-compatible provider throws when baseUrl missing", () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        dirs: ["/tmp/docs"],
+        provider: { type: "openai-compatible", apiKey: "x" },
+      })
+    );
+
+    assert.throws(() => loadConfig(), /baseUrl/);
+  });
+
+  it("openai-compatible env vars override file values", () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        dirs: ["/tmp/docs"],
+        provider: {
+          type: "openai-compatible",
+          baseUrl: "http://file-host:1234",
+          apiKey: "file-key",
+          model: "file-model",
+        },
+      })
+    );
+    process.env.KNOWLEDGE_SEARCH_COMPAT_BASE_URL = "http://env-host:9999";
+    process.env.KNOWLEDGE_SEARCH_COMPAT_API_KEY = "env-key";
+    process.env.KNOWLEDGE_SEARCH_COMPAT_MODEL = "env-model";
+
+    const config = loadConfig();
+    assert.notEqual(config, null);
+    if (config!.provider.type === "openai-compatible") {
+      assert.equal(config!.provider.baseUrl, "http://env-host:9999");
+      assert.equal(config!.provider.apiKey, "env-key");
+      assert.equal(config!.provider.model, "env-model");
+    }
+  });
+
+  it("openai-compatible does NOT fall back to OPENAI_API_KEY (credential-leak guard)", () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        dirs: ["/tmp/docs"],
+        provider: {
+          type: "openai-compatible",
+          baseUrl: "http://127.0.0.1:8080",
+        },
+      })
+    );
+    process.env.OPENAI_API_KEY = "sk-real-openai-key";
+
+    const config = loadConfig();
+    assert.notEqual(config, null);
+    if (config!.provider.type === "openai-compatible") {
+      // Real OpenAI key must NOT be bled into third-party endpoint
+      assert.equal(config!.provider.apiKey, undefined);
+    }
+  });
+
+  it("throws a helpful error if baseUrl is set on type: openai", () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({
+        dirs: ["/tmp/docs"],
+        provider: {
+          type: "openai",
+          apiKey: "sk-test",
+          baseUrl: "http://127.0.0.1:8080",
+        },
+      })
+    );
+
+    assert.throws(() => loadConfig(), /openai-compatible/);
   });
 });

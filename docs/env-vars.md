@@ -34,10 +34,12 @@ Use any server that exposes an OpenAI-compatible `/v1/embeddings` endpoint, such
 | Variable | Default |
 |----------|---------|
 | `KNOWLEDGE_SEARCH_COMPAT_BASE_URL` | *(required — e.g. `http://127.0.0.1:8080`) *|
-| `KNOWLEDGE_SEARCH_COMPAT_API_KEY` or `OPENAI_API_KEY` | *(optional)* |
+| `KNOWLEDGE_SEARCH_COMPAT_API_KEY` | *(optional — omit for runners that don't require auth)* |
 | `KNOWLEDGE_SEARCH_COMPAT_MODEL` | `text-embedding-3-small` |
 
 The `baseUrl` should point to your API root **without** the trailing `/v1` path — the embedder appends `/v1/embeddings` automatically.
+
+> **Note:** `openai-compatible` intentionally does **not** fall back to `OPENAI_API_KEY`. If you point `baseUrl` at a third-party service, we don't want to silently ship your real OpenAI key to it. Set `KNOWLEDGE_SEARCH_COMPAT_API_KEY` explicitly if auth is required.
 
 ```bash
 # Example using llama-cpp-python on port 8080:
