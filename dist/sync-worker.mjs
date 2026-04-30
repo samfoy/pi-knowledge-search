@@ -324,9 +324,14 @@ import * as fs2 from "node:fs";
 import * as path2 from "node:path";
 
 // src/chunker.ts
-var HEADING_RE = /^(#{2,6})\s+(.+)$/;
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+var LARGE_FILE_FAST_PATH_CHARS = 12e4;
 function chunkMarkdown(content, maxChunkSize = 3e3, minChunkSize = 200) {
   if (!content || content.trim().length === 0) return [];
+  if (content.length >= LARGE_FILE_FAST_PATH_CHARS) {
+    return chunkMarkdownFast(content, maxChunkSize, minChunkSize);
+  }
   const sections = splitByHeadings(content);
   if (sections.length === 0) return [];
   if (content.length <= maxChunkSize) {
@@ -345,73 +350,197 @@ function chunkMarkdown(content, maxChunkSize = 3e3, minChunkSize = 200) {
     if (section.text.length <= maxChunkSize) {
       rawChunks.push(section);
     } else {
-      const subChunks = splitByParagraphs(
-        section.text,
-        section.heading,
-        section.startLine,
-        section.charOffset,
-        maxChunkSize
-      );
-      rawChunks.push(...subChunks);
+      rawChunks.push(...splitByBlocks(section, maxChunkSize));
     }
   }
-  rawChunks = rawChunks.flatMap((chunk) => {
-    if (chunk.text.length <= maxChunkSize) return [chunk];
-    return hardSplit(chunk, maxChunkSize, 200);
-  });
-  rawChunks = mergeTiny(rawChunks, minChunkSize, maxChunkSize);
-  return rawChunks;
+  rawChunks = rawChunks.flatMap(
+    (chunk) => chunk.text.length <= maxChunkSize ? [chunk] : hardSplit(chunk, maxChunkSize, 200)
+  );
+  return mergeTiny(rawChunks, minChunkSize, maxChunkSize);
+}
+function chunkMarkdownFast(content, maxChunkSize, minChunkSize) {
+  if (content.length <= maxChunkSize) {
+    return [
+      {
+        text: content.trim(),
+        heading: "intro",
+        startLine: 0,
+        charOffset: 0
+      }
+    ];
+  }
+  const starts = lineStartOffsets(content);
+  const headingRegex = /^##+\s+(.+)$/gm;
+  const headingMatches = [];
+  for (const match of content.matchAll(headingRegex)) {
+    const start = match.index ?? 0;
+    headingMatches.push({
+      start,
+      startLine: lineFromOffset(start, starts),
+      heading: (match[1] ?? "intro").trim() || "intro"
+    });
+  }
+  const sections = [];
+  if (headingMatches.length === 0) {
+    sections.push({ text: content, heading: "intro", startLine: 0, charOffset: 0 });
+  } else {
+    if (headingMatches[0].start > 0) {
+      sections.push({
+        text: content.slice(0, headingMatches[0].start),
+        heading: "intro",
+        startLine: 0,
+        charOffset: 0
+      });
+    }
+    for (let i = 0; i < headingMatches.length; i++) {
+      const start = headingMatches[i].start;
+      const end = i + 1 < headingMatches.length ? headingMatches[i + 1].start : content.length;
+      sections.push({
+        text: content.slice(start, end),
+        heading: headingMatches[i].heading,
+        startLine: headingMatches[i].startLine,
+        charOffset: start
+      });
+    }
+  }
+  let rawChunks = [];
+  for (const section of sections) {
+    if (section.text.trim().length === 0) continue;
+    if (section.text.length <= maxChunkSize) {
+      rawChunks.push(section);
+      continue;
+    }
+    rawChunks.push(...splitByParagraphsFallback(section, maxChunkSize));
+  }
+  rawChunks = rawChunks.flatMap(
+    (chunk) => chunk.text.length <= maxChunkSize ? [chunk] : hardSplit(chunk, maxChunkSize, 200)
+  );
+  return mergeTiny(rawChunks, minChunkSize, maxChunkSize);
+}
+function lineStartOffsets(text) {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) === 10) starts.push(i + 1);
+  }
+  return starts;
+}
+function offsetFromLine(line, starts) {
+  if (!line || line <= 1) return 0;
+  return starts[Math.min(line - 1, starts.length - 1)] ?? 0;
+}
+function lineFromOffset(offset, starts) {
+  let low = 0;
+  let high = starts.length - 1;
+  while (low <= high) {
+    const mid = low + high >> 1;
+    if (starts[mid] <= offset) low = mid + 1;
+    else high = mid - 1;
+  }
+  return Math.max(0, low - 1);
+}
+function headingText(node) {
+  if (!node) return "";
+  if (typeof node.value === "string") return node.value;
+  if (!Array.isArray(node.children)) return "";
+  return node.children.map((child) => headingText(child)).join("");
 }
 function splitByHeadings(content) {
-  const lines = content.split("\n");
-  const sections = [];
-  let currentHeading = "intro";
-  let currentLines = [];
-  let sectionStartLine = 0;
-  let sectionCharOffset = 0;
-  let charPos = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const match = line.match(HEADING_RE);
-    if (match) {
-      if (currentLines.length > 0) {
-        sections.push({
-          text: currentLines.join("\n"),
-          heading: currentHeading,
-          startLine: sectionStartLine,
-          charOffset: sectionCharOffset
-        });
-      }
-      currentHeading = match[2].trim();
-      currentLines = [line];
-      sectionStartLine = i;
-      sectionCharOffset = charPos;
-    } else {
-      currentLines.push(line);
-    }
-    charPos += line.length + 1;
+  const tree = unified().use(remarkParse).parse(content);
+  const starts = lineStartOffsets(content);
+  const headings = (tree.children ?? []).filter((node) => node.type === "heading" && node.depth >= 2).map((node) => {
+    const line = node.position?.start?.line;
+    const start = offsetFromLine(line, starts);
+    return {
+      start,
+      startLine: lineFromOffset(start, starts),
+      heading: headingText(node).trim() || "intro"
+    };
+  }).sort((a, b) => a.start - b.start);
+  if (headings.length === 0) {
+    return [{ text: content, heading: "intro", startLine: 0, charOffset: 0 }];
   }
-  if (currentLines.length > 0) {
+  const sections = [];
+  if (headings[0].start > 0) {
     sections.push({
-      text: currentLines.join("\n"),
-      heading: currentHeading,
-      startLine: sectionStartLine,
-      charOffset: sectionCharOffset
+      text: content.slice(0, headings[0].start),
+      heading: "intro",
+      startLine: 0,
+      charOffset: 0
+    });
+  }
+  for (let i = 0; i < headings.length; i++) {
+    const start = headings[i].start;
+    const end = i + 1 < headings.length ? headings[i + 1].start : content.length;
+    sections.push({
+      text: content.slice(start, end),
+      heading: headings[i].heading,
+      startLine: headings[i].startLine,
+      charOffset: start
     });
   }
   return sections;
 }
-function splitByParagraphs(text, heading, startLine, charOffset, maxChunkSize) {
-  const paragraphs = text.split(/\n\n+/);
+function splitByBlocks(section, maxChunkSize) {
+  const text = section.text;
+  const tree = unified().use(remarkParse).parse(text);
+  const starts = lineStartOffsets(text);
+  const blocks = (tree.children ?? []).map((node) => {
+    const startLine = node.position?.start?.line;
+    const endLine = node.position?.end?.line;
+    if (!startLine || !endLine) return null;
+    return {
+      start: offsetFromLine(startLine, starts),
+      end: offsetFromLine(endLine + 1, starts)
+    };
+  }).filter((x) => Boolean(x)).sort((a, b) => a.start - b.start);
+  if (blocks.length === 0) {
+    return splitByParagraphsFallback(section, maxChunkSize);
+  }
+  const units = blocks.map((block, i) => ({
+    start: i === 0 ? 0 : block.start,
+    end: i + 1 < blocks.length ? blocks[i + 1].start : text.length
+  }));
   const chunks = [];
   let currentText = "";
-  let currentOffset = charOffset;
-  let currentStartLine = startLine;
+  let currentOffset = section.charOffset;
+  let currentStartLine = section.startLine;
+  for (const unit of units) {
+    const unitText = text.slice(unit.start, unit.end);
+    if (currentText.length > 0 && currentText.length + unitText.length > maxChunkSize) {
+      chunks.push({
+        text: currentText.trim(),
+        heading: section.heading,
+        startLine: currentStartLine,
+        charOffset: currentOffset
+      });
+      currentText = unitText;
+      currentOffset = section.charOffset + unit.start;
+      currentStartLine = section.startLine + lineFromOffset(unit.start, starts);
+    } else {
+      currentText += unitText;
+    }
+  }
+  if (currentText.trim().length > 0) {
+    chunks.push({
+      text: currentText.trim(),
+      heading: section.heading,
+      startLine: currentStartLine,
+      charOffset: currentOffset
+    });
+  }
+  return chunks;
+}
+function splitByParagraphsFallback(section, maxChunkSize) {
+  const paragraphs = section.text.split(/\n\n+/);
+  const chunks = [];
+  let currentText = "";
+  let currentOffset = section.charOffset;
+  let currentStartLine = section.startLine;
   for (const para of paragraphs) {
     if (currentText.length > 0 && currentText.length + para.length + 2 > maxChunkSize) {
       chunks.push({
         text: currentText.trim(),
-        heading,
+        heading: section.heading,
         startLine: currentStartLine,
         charOffset: currentOffset
       });
@@ -425,7 +554,7 @@ function splitByParagraphs(text, heading, startLine, charOffset, maxChunkSize) {
   if (currentText.trim().length > 0) {
     chunks.push({
       text: currentText.trim(),
-      heading,
+      heading: section.heading,
       startLine: currentStartLine,
       charOffset: currentOffset
     });

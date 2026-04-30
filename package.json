@@ -27,7 +27,9 @@
     "@aws-sdk/credential-providers": "3.750.0"
   },
   "dependencies": {
-    "tsx": "^4.21.0"
+    "remark-parse": "^11.0.0",
+    "tsx": "^4.21.0",
+    "unified": "^11.0.5"
   },
   "scripts": {
     "test": "node --test --import tsx src/**/*.test.ts",
