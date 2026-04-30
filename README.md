@@ -34,7 +34,7 @@ This walks you through:
 1. **Directories** to index (comma-separated paths)
 2. **File extensions** to include (default: `.md, .txt`)
 3. **Directories to exclude** (default: `node_modules, .git, .obsidian, .trash`)
-4. **Embedding provider** — OpenAI, AWS Bedrock, or local Ollama
+4. **Embedding provider** — OpenAI, OpenAI-compatible (local/self-hosted), AWS Bedrock, or Ollama
 
 Config is saved to `~/.pi/knowledge-search.json`. Run `/reload` to activate.
 
@@ -94,6 +94,37 @@ Requires [Ollama](https://ollama.ai) running locally:
 ollama serve
 ollama pull nomic-embed-text
 ```
+
+</details>
+
+<details>
+<summary>OpenAI-compatible config (free, local/self-hosted)</summary>
+
+Any server that exposes an OpenAI-compatible `/v1/embeddings` endpoint works:
+[llama.cpp](https://github.com/ggml-org/llama.cpp), [vLLM](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html),
+[litellm](https://docs.litellm.ai/), [Ollama API mode](https://ollama.ai/blog/openai-compatiblety-blog-post), etc.
+
+```json
+{
+  "dirs": ["~/notes"],
+  "provider": {
+    "type": "openai-compatible",
+    "baseUrl": "http://127.0.0.1:8080",
+    "apiKey": "your-local-key",
+    "model": "qwen3-embeddings"
+  }
+}
+```
+
+The `baseUrl` should be your server root **without** a trailing `/v1` path — the embedder appends `/v1/embeddings` automatically.
+
+For example with llama-cpp-python:
+```bash
+python -m llama_cpp.server --model ./models/qwen3-embedding.gguf --port 8080
+```
+Then configure knowledge-search to point at `http://127.0.0.1:8080` as shown above.
+
+The `apiKey` field is optional; omit it if your runner doesn't require authentication.
 
 </details>
 
