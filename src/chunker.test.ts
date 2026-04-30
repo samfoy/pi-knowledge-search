@@ -215,4 +215,155 @@ describe("chunkMarkdown", () => {
       "Higher minChunkSize should produce fewer (merged) chunks"
     );
   });
+
+  it("does not treat code-fence heading text as a real section heading", () => {
+    const md = [
+      "## Real Section",
+      "",
+      "Before code block.",
+      "",
+      "```md",
+      "## Not A Heading",
+      "text in fence",
+      "```",
+      "",
+      "After code block.",
+    ].join("\n");
+
+    const chunks = chunkMarkdown(md, 70);
+    const headings = chunks.map((c) => c.heading);
+    assert.ok(headings.includes("Real Section"));
+    assert.ok(!headings.includes("Not A Heading"));
+  });
+
+  it("supports setext-style level 2 headings as section boundaries", () => {
+    const md = [
+      "Intro text before heading.",
+      "",
+      "Setext Heading",
+      "--------------",
+      "",
+      "Body for setext heading section.",
+    ].join("\n");
+
+    const chunks = chunkMarkdown(md, 40);
+    const headings = chunks.map((c) => c.heading);
+    assert.ok(headings.includes("Setext Heading"));
+  });
+
+  it("merges tiny previous chunk into larger current chunk and adopts heading", () => {
+    const md = [
+      "## Tiny First",
+      "",
+      "x",
+      "",
+      "## Big Second",
+      "",
+      "This section is intentionally larger so it is not tiny.",
+      "",
+      "## Third",
+      "",
+      "This final section makes total content exceed max chunk size.",
+    ].join("\n");
+
+    const chunks = chunkMarkdown(md, 120, 40);
+    assert.ok(chunks.length >= 2);
+
+    // First tiny section should be merged into second and heading should adopt the larger section.
+    assert.equal(chunks[0].heading, "Big Second");
+    assert.ok(chunks[0].text.includes("## Tiny First"));
+    assert.ok(chunks[0].text.includes("## Big Second"));
+  });
+
+  it("merges tiny current chunk into previous chunk without changing previous heading", () => {
+    const md = [
+      "## Big First",
+      "",
+      "This section is intentionally larger so it is not tiny.",
+      "",
+      "## Tiny Second",
+      "",
+      "x",
+      "",
+      "## Third",
+      "",
+      "This final section makes total content exceed max chunk size.",
+    ].join("\n");
+
+    const chunks = chunkMarkdown(md, 120, 40);
+    assert.ok(chunks.length >= 2);
+
+    // Tiny second section should merge into the first, keeping first heading.
+    assert.equal(chunks[0].heading, "Big First");
+    assert.ok(chunks[0].text.includes("## Big First"));
+    assert.ok(chunks[0].text.includes("## Tiny Second"));
+  });
+
+  it("does not treat the closing --- of YAML frontmatter as a setext heading", () => {
+    // Without remark-frontmatter, the closing `---` of a YAML frontmatter
+    // block gets parsed as a setext heading underline for the previous line,
+    // producing a phantom heading named after the last frontmatter key.
+    const md = [
+      "---",
+      "tags: [notes, moc]",
+      "type: moc",
+      "---",
+      "",
+      "# Real Title",
+      "",
+      "Real intro paragraph.",
+      "",
+      "## First Section",
+      "",
+      "Body for first section.",
+    ].join("\n");
+
+    const chunks = chunkMarkdown(md, 40);
+    const headings = chunks.map((c) => c.heading);
+    assert.ok(headings.includes("First Section"), `expected 'First Section' in ${JSON.stringify(headings)}`);
+    // No chunk should claim the YAML body as its heading.
+    assert.ok(!headings.some((h) => h.includes("type: moc")));
+    assert.ok(!headings.some((h) => h.includes("tags:")));
+  });
+
+  it("does not treat the closing +++ of TOML frontmatter as a setext heading", () => {
+    const md = [
+      "+++",
+      "title = 'x'",
+      "+++",
+      "",
+      "## First Section",
+      "",
+      "Body for first section.",
+    ].join("\n");
+
+    const chunks = chunkMarkdown(md, 40);
+    const headings = chunks.map((c) => c.heading);
+    assert.ok(headings.includes("First Section"));
+    assert.ok(!headings.some((h) => h.includes("title")));
+  });
+
+  it("uses fast path for very large files (>= 120k chars) without regressing basics", () => {
+    // Build a large file that exceeds the LARGE_FILE_FAST_PATH_CHARS threshold.
+    const section = [
+      "## Section",
+      "",
+      "Paragraph of content. ".repeat(20),
+      "",
+    ].join("\n");
+    const md = section.repeat(400); // ~150k+ chars
+    assert.ok(md.length >= 120_000, `expected >= 120k chars, got ${md.length}`);
+
+    const chunks = chunkMarkdown(md, 3000, 200);
+    assert.ok(chunks.length > 1);
+    // Most chunks should be under the size limit.
+    for (const chunk of chunks) {
+      assert.ok(
+        chunk.text.length <= 3000,
+        `Fast path produced oversized chunk: ${chunk.text.length}`
+      );
+    }
+    // At least some chunks should recognise the ## Section heading.
+    assert.ok(chunks.some((c) => c.heading === "Section"));
+  });
 });
