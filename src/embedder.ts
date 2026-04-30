@@ -1,7 +1,8 @@
 import type { ProviderConfig } from "./config";
 
 /**
- * Unified embedding interface. Implementations for OpenAI, Bedrock, and Ollama.
+ * Unified embedding interface. Implementations for OpenAI, OpenAI-compatible,
+ * Bedrock, and Ollama.
  */
 export interface Embedder {
   embed(text: string, signal?: AbortSignal): Promise<number[]>;
@@ -22,7 +23,14 @@ export function createEmbedder(
 ): Embedder {
   switch (config.type) {
     case "openai":
-      return new OpenAIEmbedder(config.apiKey, config.model, dimensions);
+      return new OpenAIEmbedder(config.apiKey, config.model, dimensions, undefined);
+    case "openai-compatible":
+      return new OpenAIEmbedder(
+        config.apiKey ?? "",
+        config.model,
+        dimensions,
+        config.baseUrl
+      );
     case "bedrock":
       return new BedrockEmbedder(
         config.profile,
@@ -97,18 +105,29 @@ async function parallelMap<T, R>(
 }
 
 // ---------------------------------------------------------------------------
-// OpenAI
+// OpenAI / OpenAI-compatible
 // ---------------------------------------------------------------------------
 
 class OpenAIEmbedder implements Embedder {
   private apiKey: string;
   private model: string;
   private dimensions: number;
+  private endpoint: string;
 
-  constructor(apiKey: string, model: string, dimensions: number) {
+  constructor(
+    apiKey: string,
+    model: string,
+    dimensions: number,
+    baseUrl?: string
+  ) {
     this.apiKey = apiKey;
     this.model = model;
     this.dimensions = dimensions;
+    if (baseUrl) {
+      this.endpoint = `${baseUrl.replace(/\/$/, "")}/v1/embeddings`;
+    } else {
+      this.endpoint = `https://api.openai.com/v1/embeddings`;
+    }
   }
 
   async embed(text: string, signal?: AbortSignal): Promise<number[]> {
@@ -132,10 +151,10 @@ class OpenAIEmbedder implements Embedder {
 
       try {
         const json = await withRateLimitRetry(async () => {
-          const res = await fetch("https://api.openai.com/v1/embeddings", {
+          const res = await fetch(this.endpoint, {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${this.apiKey}`,
+              ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
               "Content-Type": "application/json",
             },
             body: JSON.stringify({
@@ -154,7 +173,7 @@ class OpenAIEmbedder implements Embedder {
           return (await res.json()) as {
             data: { embedding: number[]; index: number }[];
           };
-        }, "OpenAI embed");
+        }, "embedding");
 
         for (const item of json.data) {
           results[i + item.index] = item.embedding;
@@ -164,7 +183,10 @@ class OpenAIEmbedder implements Embedder {
         for (let j = 0; j < batch.length; j++) {
           results[i + j] = null;
         }
-        console.error(`OpenAI batch embedding failed: ${err.message}`);
+        const label = this.endpoint.includes("api.openai.com")
+          ? "OpenAI"
+          : `Embedding (${this.endpoint})`;
+        console.error(`${label} batch embedding failed: ${err.message}`);
       }
     }
 

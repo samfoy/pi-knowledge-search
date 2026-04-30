@@ -21,6 +21,7 @@ export interface Config {
 
 export type ProviderConfig =
   | { type: "openai"; apiKey: string; model: string }
+  | { type: "openai-compatible"; apiKey?: string; model: string; baseUrl: string }
   | { type: "bedrock"; profile: string; region: string; model: string }
   | { type: "ollama"; url: string; model: string };
 
@@ -33,6 +34,7 @@ export interface ConfigFile {
   knowledgeBases?: KnowledgeBaseConfig[];
   provider?:
     | { type: "openai"; apiKey?: string; model?: string }
+    | { type: "openai-compatible"; apiKey?: string; model?: string; baseUrl?: string }
     | { type: "bedrock"; profile?: string; region?: string; model?: string }
     | { type: "ollama"; url?: string; model?: string };
 }
@@ -95,6 +97,16 @@ export function loadConfig(): Config | null {
   if (providerType) {
   switch (providerType) {
     case "openai": {
+      // Helpful migration error: if someone set a custom baseUrl on `openai`,
+      // it used to be silently ignored. Steer them to openai-compatible.
+      if (
+        file?.provider?.type === "openai" &&
+        (file.provider as { baseUrl?: unknown }).baseUrl
+      ) {
+        throw new Error(
+          'Custom baseUrl is not supported on provider type "openai" (it would be silently ignored and requests would hit api.openai.com). Change "type" to "openai-compatible" to use a custom endpoint.'
+        );
+      }
       const apiKey =
         envStr("KNOWLEDGE_SEARCH_OPENAI_API_KEY") ??
         process.env.OPENAI_API_KEY ??
@@ -113,6 +125,40 @@ export function loadConfig(): Config | null {
             ? file.provider.model
             : undefined) ??
           "text-embedding-3-small",
+      };
+      break;
+    }
+    case "openai-compatible": {
+      // Intentionally do NOT fall back to OPENAI_API_KEY here — an openai-
+      // compatible endpoint may be a third-party service, and silently sending
+      // the user's real OpenAI key to a foreign host would be a credential leak.
+      // Users must set KNOWLEDGE_SEARCH_COMPAT_API_KEY explicitly (or leave
+      // unset for runners like llama.cpp that don't require auth).
+      const compatApiKey =
+        envStr("KNOWLEDGE_SEARCH_COMPAT_API_KEY") ??
+        (file?.provider?.type === "openai-compatible"
+          ? file.provider.apiKey
+          : undefined);
+      const compatBaseUrl =
+        envStr("KNOWLEDGE_SEARCH_COMPAT_BASE_URL") ??
+        (file?.provider?.type === "openai-compatible"
+          ? file.provider.baseUrl
+          : undefined);
+      if (!compatBaseUrl) {
+        throw new Error(
+          'OpenAI-compatible requires baseUrl. Set KNOWLEDGE_SEARCH_COMPAT_BASE_URL or provide it in your knowledge-search.json config.'
+        );
+      }
+      provider = {
+        type: "openai-compatible",
+        apiKey: compatApiKey,
+        model:
+          envStr("KNOWLEDGE_SEARCH_COMPAT_MODEL") ??
+          (file?.provider?.type === "openai-compatible"
+            ? file.provider.model
+            : undefined) ??
+          "text-embedding-3-small",
+        baseUrl: compatBaseUrl,
       };
       break;
     }
@@ -158,7 +204,7 @@ export function loadConfig(): Config | null {
       break;
     default:
       throw new Error(
-        `Unknown provider: "${providerType}". Use "openai", "bedrock", or "ollama".`
+        `Unknown provider: "${providerType}". Use "openai", "openai-compatible", "bedrock", or "ollama".`
       );
   }
   } // end if (providerType)

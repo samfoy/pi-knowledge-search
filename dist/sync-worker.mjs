@@ -29,6 +29,11 @@ function loadConfig() {
   if (providerType) {
     switch (providerType) {
       case "openai": {
+        if (file?.provider?.type === "openai" && file.provider.baseUrl) {
+          throw new Error(
+            'Custom baseUrl is not supported on provider type "openai" (it would be silently ignored and requests would hit api.openai.com). Change "type" to "openai-compatible" to use a custom endpoint.'
+          );
+        }
         const apiKey = envStr("KNOWLEDGE_SEARCH_OPENAI_API_KEY") ?? process.env.OPENAI_API_KEY ?? (file?.provider?.type === "openai" ? file.provider.apiKey : void 0);
         if (!apiKey) {
           throw new Error(
@@ -39,6 +44,22 @@ function loadConfig() {
           type: "openai",
           apiKey,
           model: envStr("KNOWLEDGE_SEARCH_OPENAI_MODEL") ?? (file?.provider?.type === "openai" ? file.provider.model : void 0) ?? "text-embedding-3-small"
+        };
+        break;
+      }
+      case "openai-compatible": {
+        const compatApiKey = envStr("KNOWLEDGE_SEARCH_COMPAT_API_KEY") ?? (file?.provider?.type === "openai-compatible" ? file.provider.apiKey : void 0);
+        const compatBaseUrl = envStr("KNOWLEDGE_SEARCH_COMPAT_BASE_URL") ?? (file?.provider?.type === "openai-compatible" ? file.provider.baseUrl : void 0);
+        if (!compatBaseUrl) {
+          throw new Error(
+            "OpenAI-compatible requires baseUrl. Set KNOWLEDGE_SEARCH_COMPAT_BASE_URL or provide it in your knowledge-search.json config."
+          );
+        }
+        provider = {
+          type: "openai-compatible",
+          apiKey: compatApiKey,
+          model: envStr("KNOWLEDGE_SEARCH_COMPAT_MODEL") ?? (file?.provider?.type === "openai-compatible" ? file.provider.model : void 0) ?? "text-embedding-3-small",
+          baseUrl: compatBaseUrl
         };
         break;
       }
@@ -59,7 +80,7 @@ function loadConfig() {
         break;
       default:
         throw new Error(
-          `Unknown provider: "${providerType}". Use "openai", "bedrock", or "ollama".`
+          `Unknown provider: "${providerType}". Use "openai", "openai-compatible", "bedrock", or "ollama".`
         );
     }
   }
@@ -87,7 +108,14 @@ function envInt(key) {
 function createEmbedder(config2, dimensions) {
   switch (config2.type) {
     case "openai":
-      return new OpenAIEmbedder(config2.apiKey, config2.model, dimensions);
+      return new OpenAIEmbedder(config2.apiKey, config2.model, dimensions, void 0);
+    case "openai-compatible":
+      return new OpenAIEmbedder(
+        config2.apiKey ?? "",
+        config2.model,
+        dimensions,
+        config2.baseUrl
+      );
     case "bedrock":
       return new BedrockEmbedder(
         config2.profile,
@@ -140,10 +168,16 @@ var OpenAIEmbedder = class {
   apiKey;
   model;
   dimensions;
-  constructor(apiKey, model, dimensions) {
+  endpoint;
+  constructor(apiKey, model, dimensions, baseUrl) {
     this.apiKey = apiKey;
     this.model = model;
     this.dimensions = dimensions;
+    if (baseUrl) {
+      this.endpoint = `${baseUrl.replace(/\/$/, "")}/v1/embeddings`;
+    } else {
+      this.endpoint = `https://api.openai.com/v1/embeddings`;
+    }
   }
   async embed(text, signal) {
     const results = await this.embedBatch([text], signal);
@@ -158,10 +192,10 @@ var OpenAIEmbedder = class {
       const batch = texts.slice(i, i + BATCH).map((t) => truncate(t));
       try {
         const json = await withRateLimitRetry(async () => {
-          const res = await fetch("https://api.openai.com/v1/embeddings", {
+          const res = await fetch(this.endpoint, {
             method: "POST",
             headers: {
-              Authorization: `Bearer ${this.apiKey}`,
+              ...this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {},
               "Content-Type": "application/json"
             },
             body: JSON.stringify({
@@ -176,7 +210,7 @@ var OpenAIEmbedder = class {
             throw new Error(`OpenAI API ${res.status}: ${body.slice(0, 200)}`);
           }
           return await res.json();
-        }, "OpenAI embed");
+        }, "embedding");
         for (const item of json.data) {
           results[i + item.index] = item.embedding;
         }
@@ -184,7 +218,8 @@ var OpenAIEmbedder = class {
         for (let j = 0; j < batch.length; j++) {
           results[i + j] = null;
         }
-        console.error(`OpenAI batch embedding failed: ${err.message}`);
+        const label = this.endpoint.includes("api.openai.com") ? "OpenAI" : `Embedding (${this.endpoint})`;
+        console.error(`${label} batch embedding failed: ${err.message}`);
       }
     }
     return results;
