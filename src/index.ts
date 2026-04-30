@@ -19,7 +19,7 @@ export default function (pi: ExtensionAPI) {
   // Lifecycle
   // ------------------------------------------------------------------
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     try {
       currentConfig = loadConfig();
     } catch {
@@ -30,7 +30,7 @@ export default function (pi: ExtensionAPI) {
     if (currentConfig.provider) {
       const embedder = createEmbedder(currentConfig.provider, currentConfig.dimensions);
       index = new KnowledgeIndex(currentConfig, embedder);
-      index.loadSync();
+      await index.load();
     }
 
     if (currentConfig.knowledgeBases.length > 0) {
@@ -69,13 +69,13 @@ export default function (pi: ExtensionAPI) {
         console.error(`knowledge-search: worker error: ${err.message}`);
       });
 
-      worker.on("exit", (code, signal) => {
+      worker.on("exit", async (code, signal) => {
         syncDone = true;
         if (code === 0 && stdout) {
           try {
             const result = JSON.parse(stdout);
             // Reload the index from disk since the worker updated it
-            index!.loadSync();
+            await index!.load();
             const changes = result.added + result.updated + result.removed;
             if (changes > 0) {
               ctx.ui.setStatus(
@@ -119,7 +119,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     workerExitExpected = true;
     // watcher removed (d38a81f) — caused UI freezes. Rely on sync-on-startup only.
-    index?.close();
+    await index?.close();
   });
 
   // ------------------------------------------------------------------

@@ -322,6 +322,8 @@ var OllamaEmbedder = class {
 // src/index-store.ts
 import * as fs2 from "node:fs";
 import * as path2 from "node:path";
+import Assembler from "stream-json/assembler.js";
+import makeParser from "stream-json/index.js";
 
 // src/chunker.ts
 import remarkFrontmatter from "remark-frontmatter";
@@ -603,7 +605,7 @@ function mergeTiny(chunks, minSize, maxSize) {
 // src/index-store.ts
 var INDEX_VERSION = 3;
 var MAX_EXCERPT_LENGTH = 3500;
-var KnowledgeIndex = class {
+var KnowledgeIndex = class _KnowledgeIndex {
   config;
   embedder;
   data;
@@ -628,34 +630,163 @@ var KnowledgeIndex = class {
   chunkCount() {
     return Object.keys(this.data.entries).length;
   }
-  loadSync() {
+  /**
+   * Threshold above which the load/save paths switch to streaming. V8's
+   * string length limit is ~512MB (2^29 - 24 bytes on 64-bit). A single
+   * call to `readFileSync(path, "utf-8")` or `JSON.stringify(hugeObject)`
+   * throws `RangeError: Invalid string length` once that limit is hit.
+   *
+   * Below this threshold we use the straightforward sync paths since they
+   * are an order of magnitude faster. Above it we switch to streaming.
+   *
+   * Set to 256MB to give a generous safety margin below the hard cliff.
+   */
+  static STREAMING_THRESHOLD_BYTES = 256 * 1024 * 1024;
+  /**
+   * Load the index from disk.
+   *
+   * Uses a fast sync path (`readFileSync` + `JSON.parse`) for normal-sized
+   * indexes and automatically falls back to a streaming reader for files
+   * large enough to risk V8's string length limit (`RangeError: Invalid
+   * string length`).
+   *
+   * If the file is missing, corrupt, or from an incompatible version, falls
+   * back to an empty index and returns — callers will then trigger a full
+   * re-index. Never throws.
+   */
+  async load() {
     const indexFile = path2.join(this.config.indexDir, "index.json");
-    if (fs2.existsSync(indexFile)) {
-      try {
+    if (!fs2.existsSync(indexFile)) return;
+    try {
+      let parsed = null;
+      const size = fs2.statSync(indexFile).size;
+      if (size >= _KnowledgeIndex.STREAMING_THRESHOLD_BYTES) {
+        parsed = await this.streamLoadJson(indexFile);
+      } else {
         const raw = fs2.readFileSync(indexFile, "utf-8");
-        const parsed = JSON.parse(raw);
-        if (parsed.version === INDEX_VERSION && parsed.dimensions === this.config.dimensions) {
-          this.data = parsed;
-        }
-      } catch {
+        parsed = JSON.parse(raw);
       }
+      if (parsed && parsed.version === INDEX_VERSION && parsed.dimensions === this.config.dimensions) {
+        this.data = parsed;
+      }
+    } catch {
     }
   }
-  async load() {
-    this.loadSync();
+  streamLoadJson(file) {
+    return new Promise((resolve, reject) => {
+      const stream = fs2.createReadStream(file, { highWaterMark: 256 * 1024 });
+      const parser = makeParser();
+      const assembler = Assembler.connectTo(parser);
+      let settled = false;
+      const settle = (ok, err) => {
+        if (settled) return;
+        settled = true;
+        if (err) err(new Error("assembler failed"));
+        else ok();
+      };
+      assembler.on("done", (asm) => {
+        settle(() => resolve(asm.current));
+      });
+      stream.on("error", (e) => settle(() => resolve(null), () => reject(e)));
+      parser.on("error", (e) => settle(() => resolve(null), () => reject(e)));
+      stream.pipe(parser);
+    });
   }
-  save() {
+  /**
+   * Persist the index to disk.
+   *
+   * Fast path: `JSON.stringify` + `writeFile`, wrapped in an atomic rename
+   * from `index.json.tmp`. This handles all normal-sized indexes in one shot.
+   *
+   * Fallback path: if `JSON.stringify` throws `RangeError: Invalid string
+   * length` (V8's ~512MB string limit), fall back to streaming the JSON out
+   * block by block via `createWriteStream`. This path never materialises the
+   * full serialised form as a single string.
+   *
+   * Either way the write is atomic: content goes to `index.json.tmp` first,
+   * then renamed over `index.json` once fully flushed. A crash mid-write
+   * leaves the previous `index.json` intact.
+   */
+  async save() {
     fs2.mkdirSync(this.config.indexDir, { recursive: true });
-    const indexFile = path2.join(this.config.indexDir, "index.json");
-    fs2.writeFileSync(indexFile, JSON.stringify(this.data));
-    this.dirty = false;
+    const finalFile = path2.join(this.config.indexDir, "index.json");
+    const tmpFile = finalFile + ".tmp";
+    try {
+      let serialised;
+      try {
+        serialised = JSON.stringify(this.data);
+      } catch (err) {
+        if (err instanceof RangeError) {
+          await this.saveStreaming(tmpFile);
+          await fs2.promises.rename(tmpFile, finalFile);
+          this.dirty = false;
+          return;
+        }
+        throw err;
+      }
+      await fs2.promises.writeFile(tmpFile, serialised);
+      await fs2.promises.rename(tmpFile, finalFile);
+      this.dirty = false;
+    } catch (err) {
+      try {
+        fs2.unlinkSync(tmpFile);
+      } catch {
+      }
+      throw err;
+    }
+  }
+  /**
+   * Streaming fallback used when the index is too big for `JSON.stringify`
+   * to produce a single string. Writes key-by-key through a write stream so
+   * no intermediate giant string is ever materialised.
+   */
+  async saveStreaming(tmpFile) {
+    const stream = fs2.createWriteStream(tmpFile);
+    let streamError = null;
+    stream.once("error", (err) => {
+      streamError = err;
+    });
+    const write = (chunk) => new Promise((resolve, reject) => {
+      if (streamError) {
+        reject(streamError);
+        return;
+      }
+      if (stream.write(chunk)) {
+        resolve();
+      } else {
+        stream.once("drain", () => streamError ? reject(streamError) : resolve());
+      }
+    });
+    try {
+      await write(
+        `{"version":${JSON.stringify(this.data.version)},"dimensions":${JSON.stringify(this.data.dimensions)},"entries":{`
+      );
+      let first = true;
+      for (const key of Object.keys(this.data.entries)) {
+        const entry = this.data.entries[key];
+        const prefix = first ? "" : ",";
+        first = false;
+        await write(`${prefix}${JSON.stringify(key)}:${JSON.stringify(entry)}`);
+      }
+      await write("}}");
+    } catch (err) {
+      stream.destroy();
+      throw err;
+    }
+    await new Promise((resolve, reject) => {
+      stream.end((err) => err ? reject(err) : resolve());
+    });
   }
   scheduleSave() {
     if (this.saveTimer) return;
     this.dirty = true;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      if (this.dirty) this.save();
+      if (this.dirty) {
+        void this.save().catch((err) => {
+          console.error(`knowledge-search: scheduled save failed: ${err.message}`);
+        });
+      }
     }, 5e3);
   }
   /**
@@ -772,7 +903,7 @@ ${chunkText}`;
       }
     }
     if (added + updated + removed > 0) {
-      this.save();
+      await this.save();
     }
     return { added, updated, removed };
   }
@@ -857,14 +988,14 @@ ${chunkText}`;
   deleteFile(absPath) {
     this.removeFile(absPath);
   }
-  /** Flush pending saves and release resources. */
-  close() {
+  /** Flush pending saves and release resources. Awaits any in-flight save. */
+  async close() {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     if (this.dirty) {
-      this.save();
+      await this.save();
     }
   }
   // -----------------------------------------------------------------------
@@ -948,7 +1079,7 @@ if (!config || !config.provider) {
 }
 var embedder = createEmbedder(config.provider, config.dimensions);
 var index = new KnowledgeIndex(config, embedder);
-index.loadSync();
+await index.load();
 index.sync().then(({ added, updated, removed }) => {
   const result = JSON.stringify({
     added,

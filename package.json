@@ -29,6 +29,7 @@
   "dependencies": {
     "remark-frontmatter": "^5.0.0",
     "remark-parse": "^11.0.0",
+    "stream-json": "^2.1.0",
     "tsx": "^4.21.0",
     "unified": "^11.0.5"
   },
