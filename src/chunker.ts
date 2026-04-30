@@ -31,11 +31,7 @@ const HEADING_RE = /^(#{2,6})\s+(.+)$/;
  * 6. For files with no headings, split on paragraphs
  * 7. Each chunk gets the file's title (first # heading or filename) prepended for context
  */
-export function chunkMarkdown(
-  content: string,
-  maxChunkSize = 3000,
-  minChunkSize = 200
-): Chunk[] {
+export function chunkMarkdown(content: string, maxChunkSize = 3000, minChunkSize = 200): Chunk[] {
   if (!content || content.trim().length === 0) return [];
 
   // Split into sections by ## headings
@@ -157,10 +153,7 @@ function splitByParagraphs(
   let currentStartLine = startLine;
 
   for (const para of paragraphs) {
-    if (
-      currentText.length > 0 &&
-      currentText.length + para.length + 2 > maxChunkSize
-    ) {
+    if (currentText.length > 0 && currentText.length + para.length + 2 > maxChunkSize) {
       // Flush current accumulation
       chunks.push({
         text: currentText.trim(),
@@ -213,11 +206,7 @@ function hardSplit(chunk: Chunk, maxSize: number, overlap: number): Chunk[] {
 }
 
 /** Merge chunks smaller than minSize with their neighbor. */
-function mergeTiny(
-  chunks: Chunk[],
-  minSize: number,
-  maxSize: number
-): Chunk[] {
+function mergeTiny(chunks: Chunk[], minSize: number, maxSize: number): Chunk[] {
   if (chunks.length <= 1) return chunks;
 
   const merged: Chunk[] = [chunks[0]];
@@ -227,15 +216,9 @@ function mergeTiny(
     const curr = chunks[i];
 
     // Merge if current is tiny and combined size fits
-    if (
-      curr.text.length < minSize &&
-      prev.text.length + curr.text.length + 2 <= maxSize
-    ) {
+    if (curr.text.length < minSize && prev.text.length + curr.text.length + 2 <= maxSize) {
       prev.text = prev.text + "\n\n" + curr.text;
-    } else if (
-      prev.text.length < minSize &&
-      prev.text.length + curr.text.length + 2 <= maxSize
-    ) {
+    } else if (prev.text.length < minSize && prev.text.length + curr.text.length + 2 <= maxSize) {
       prev.text = prev.text + "\n\n" + curr.text;
       prev.heading = curr.heading; // adopt the bigger chunk's heading
     } else {

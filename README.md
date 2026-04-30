@@ -31,6 +31,7 @@ Run the interactive setup command inside pi:
 ```
 
 This walks you through:
+
 1. **Directories** to index (comma-separated paths)
 2. **File extensions** to include (default: `.md, .txt`)
 3. **Directories to exclude** (default: `node_modules, .git, .obsidian, .trash`)
@@ -90,6 +91,7 @@ Requires the AWS SDK and valid credentials for the specified profile.
 ```
 
 Requires [Ollama](https://ollama.ai) running locally:
+
 ```bash
 ollama serve
 ollama pull nomic-embed-text
@@ -119,9 +121,11 @@ Any server that exposes an OpenAI-compatible `/v1/embeddings` endpoint works:
 The `baseUrl` should be your server root **without** a trailing `/v1` path — the embedder appends `/v1/embeddings` automatically.
 
 For example with llama-cpp-python:
+
 ```bash
 python -m llama_cpp.server --model ./models/qwen3-embedding.gguf --port 8080
 ```
+
 Then configure knowledge-search to point at `http://127.0.0.1:8080` as shown above.
 
 The `apiKey` field is optional; omit it if your runner doesn't require authentication.
@@ -189,23 +193,23 @@ The index is stored at `~/.pi/knowledge-search/index.json`.
 
 ## Commands
 
-| Command | Description |
-|---------|-------------|
-| `/knowledge-search-setup` | Interactive setup wizard |
-| `/knowledge-add-kb` | Add a Bedrock Knowledge Base as a search source |
-| `/knowledge-reindex` | Force a full re-index |
+| Command                   | Description                                     |
+| ------------------------- | ----------------------------------------------- |
+| `/knowledge-search-setup` | Interactive setup wizard                        |
+| `/knowledge-add-kb`       | Add a Bedrock Knowledge Base as a search source |
+| `/knowledge-reindex`      | Force a full re-index                           |
 
 ## Performance
 
 Typical numbers for ~500 markdown files (~20MB):
 
-| Operation | Time |
-|-----------|------|
-| Full index build | ~7s |
-| Incremental sync (no changes) | ~12ms |
-| File re-embed (watcher) | ~200ms |
-| Search query | ~250ms |
-| Index file size | ~5MB |
+| Operation                     | Time   |
+| ----------------------------- | ------ |
+| Full index build              | ~7s    |
+| Incremental sync (no changes) | ~12ms  |
+| File re-embed (watcher)       | ~200ms |
+| Search query                  | ~250ms |
+| Index file size               | ~5MB   |
 
 ## License
 

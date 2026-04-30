@@ -17,27 +17,14 @@ export interface Embedder {
 // Factory
 // ---------------------------------------------------------------------------
 
-export function createEmbedder(
-  config: ProviderConfig,
-  dimensions: number
-): Embedder {
+export function createEmbedder(config: ProviderConfig, dimensions: number): Embedder {
   switch (config.type) {
     case "openai":
       return new OpenAIEmbedder(config.apiKey, config.model, dimensions, undefined);
     case "openai-compatible":
-      return new OpenAIEmbedder(
-        config.apiKey ?? "",
-        config.model,
-        dimensions,
-        config.baseUrl
-      );
+      return new OpenAIEmbedder(config.apiKey ?? "", config.model, dimensions, config.baseUrl);
     case "bedrock":
-      return new BedrockEmbedder(
-        config.profile,
-        config.region,
-        config.model,
-        dimensions
-      );
+      return new BedrockEmbedder(config.profile, config.region, config.model, dimensions);
     case "ollama":
       return new OllamaEmbedder(config.url, config.model);
   }
@@ -55,10 +42,7 @@ function truncate(text: string, maxChars = 10000): string {
 const RETRY_DELAYS = [1000, 2000, 4000]; // exponential backoff for 429s
 
 /** Retry a fetch-based operation on 429 rate-limit errors with exponential backoff. */
-async function withRateLimitRetry<T>(
-  fn: () => Promise<T>,
-  label: string
-): Promise<T> {
+async function withRateLimitRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
@@ -98,9 +82,7 @@ async function parallelMap<T, R>(
     }
   };
 
-  await Promise.all(
-    Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
-  );
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
   return results;
 }
 
@@ -114,12 +96,7 @@ class OpenAIEmbedder implements Embedder {
   private dimensions: number;
   private endpoint: string;
 
-  constructor(
-    apiKey: string,
-    model: string,
-    dimensions: number,
-    baseUrl?: string
-  ) {
+  constructor(apiKey: string, model: string, dimensions: number, baseUrl?: string) {
     this.apiKey = apiKey;
     this.model = model;
     this.dimensions = dimensions;
@@ -136,10 +113,7 @@ class OpenAIEmbedder implements Embedder {
     return results[0];
   }
 
-  async embedBatch(
-    texts: string[],
-    signal?: AbortSignal
-  ): Promise<(number[] | null)[]> {
+  async embedBatch(texts: string[], signal?: AbortSignal): Promise<(number[] | null)[]> {
     // OpenAI supports batch embedding natively (up to 2048 inputs).
     // Chunk into groups of 100 to stay safe on payload size.
     const BATCH = 100;
@@ -204,20 +178,13 @@ class BedrockEmbedder implements Embedder {
   private dimensions: number;
   private clientPromise: Promise<any>;
 
-  constructor(
-    profile: string,
-    region: string,
-    model: string,
-    dimensions: number
-  ) {
+  constructor(profile: string, region: string, model: string, dimensions: number) {
     this.model = model;
     this.dimensions = dimensions;
 
     // Lazy-load the AWS SDK — it's an optional dependency
     this.clientPromise = (async () => {
-      const { BedrockRuntimeClient } = await import(
-        "@aws-sdk/client-bedrock-runtime"
-      );
+      const { BedrockRuntimeClient } = await import("@aws-sdk/client-bedrock-runtime");
       const { fromIni } = await import("@aws-sdk/credential-providers");
       return new BedrockRuntimeClient({
         region,
@@ -245,9 +212,7 @@ class BedrockEmbedder implements Embedder {
         try {
           return await this.callBedrock(client, text);
         } catch (err: any) {
-          console.error(
-            `Bedrock embedding failed (${text.slice(0, 50)}...): ${err.message}`
-          );
+          console.error(`Bedrock embedding failed (${text.slice(0, 50)}...): ${err.message}`);
           return null;
         }
       },
@@ -258,9 +223,7 @@ class BedrockEmbedder implements Embedder {
 
   private async callBedrock(client: any, text: string): Promise<number[]> {
     return withRateLimitRetry(async () => {
-      const { InvokeModelCommand } = await import(
-        "@aws-sdk/client-bedrock-runtime"
-      );
+      const { InvokeModelCommand } = await import("@aws-sdk/client-bedrock-runtime");
 
       const body = JSON.stringify({
         inputText: truncate(text),
@@ -280,8 +243,7 @@ class BedrockEmbedder implements Embedder {
 
       if (!responseBody.embedding) {
         throw new Error(
-          "Unexpected Bedrock response: " +
-            JSON.stringify(responseBody).slice(0, 200)
+          "Unexpected Bedrock response: " + JSON.stringify(responseBody).slice(0, 200)
         );
       }
       return responseBody.embedding;
@@ -334,9 +296,7 @@ class OllamaEmbedder implements Embedder {
         try {
           return await this.embed(text, signal);
         } catch (err: any) {
-          console.error(
-            `Ollama embedding failed (${text.slice(0, 50)}...): ${err.message}`
-          );
+          console.error(`Ollama embedding failed (${text.slice(0, 50)}...): ${err.message}`);
           return null;
         }
       },

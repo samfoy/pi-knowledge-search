@@ -33,9 +33,9 @@ const envKeys = [
   "OPENAI_API_KEY",
 ];
 
-let loadConfig: typeof import("./config.js")["loadConfig"];
-let getConfigPath: typeof import("./config.js")["getConfigPath"];
-let saveConfig: typeof import("./config.js")["saveConfig"];
+let loadConfig: (typeof import("./config.js"))["loadConfig"];
+let getConfigPath: (typeof import("./config.js"))["getConfigPath"];
+let saveConfig: (typeof import("./config.js"))["saveConfig"];
 
 const originalEnv: Record<string, string | undefined> = {};
 
@@ -69,7 +69,9 @@ describe("config", () => {
       }
     }
     // Remove config file if exists
-    try { fs.unlinkSync(configFile); } catch {}
+    try {
+      fs.unlinkSync(configFile);
+    } catch {}
   });
 
   after(() => {
