@@ -21,7 +21,7 @@ if (!config || !config.provider) {
 
 const embedder = createEmbedder(config.provider, config.dimensions);
 const index = new KnowledgeIndex(config, embedder);
-index.loadSync();
+await index.load();
 
 index
   .sync()
