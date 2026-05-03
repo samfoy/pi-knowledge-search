@@ -410,3 +410,141 @@ describe("KnowledgeIndex hybrid search", () => {
     await idx.close();
   });
 });
+
+describe("KnowledgeIndex FTS-only mode (no embedder)", () => {
+  let tmpDir: string;
+  let vaultDir: string;
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ks-ftsonly-"));
+    vaultDir = path.join(tmpDir, "vault");
+    fs.mkdirSync(vaultDir);
+  });
+
+  beforeEach(() => {
+    for (const f of fs.readdirSync(tmpDir)) {
+      if (f === "vault") {
+        for (const vf of fs.readdirSync(vaultDir)) {
+          fs.rmSync(path.join(vaultDir, vf), { force: true });
+        }
+      } else {
+        fs.rmSync(path.join(tmpDir, f), { recursive: true, force: true });
+      }
+    }
+  });
+
+  after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function makeFtsOnlyConfig(indexDir: string): Config {
+    return {
+      dirs: [vaultDir],
+      fileExtensions: [".md"],
+      excludeDirs: [],
+      dimensions: 512,
+      provider: null,
+      indexDir,
+      knowledgeBases: [],
+    };
+  }
+
+  it("isFtsOnly is true when embedder is null", async () => {
+    const indexDir = path.join(tmpDir, "idx1");
+    fs.mkdirSync(indexDir);
+    const idx = new KnowledgeIndex(makeFtsOnlyConfig(indexDir), null);
+    await idx.load();
+    assert.equal(idx.isFtsOnly, true);
+    await idx.close();
+  });
+
+  it("sync() indexes files without an embedder", async () => {
+    fs.writeFileSync(
+      path.join(vaultDir, "a.md"),
+      "# Recipes\n\nChocolate chip cookies recipe with flour and butter.",
+    );
+    fs.writeFileSync(
+      path.join(vaultDir, "b.md"),
+      "# Errors\n\nERR_REQUIRE_CYCLE_MODULE bug report filed today.",
+    );
+
+    const indexDir = path.join(tmpDir, "idx2");
+    fs.mkdirSync(indexDir);
+    const idx = new KnowledgeIndex(makeFtsOnlyConfig(indexDir), null);
+    await idx.load();
+    const { added } = await idx.sync();
+    assert.equal(added, 2);
+    assert.equal(idx.size(), 2);
+
+    // Entries should have empty vectors (placeholder) but FTS should work.
+    const internal = idx as unknown as { data: { entries: Record<string, { vector: number[] }> } };
+    for (const e of Object.values(internal.data.entries)) {
+      assert.deepEqual(e.vector, []);
+    }
+    await idx.close();
+  });
+
+  it("search() returns BM25 results in FTS-only mode", async () => {
+    fs.writeFileSync(
+      path.join(vaultDir, "a.md"),
+      "# Cookies\n\nChocolate chip cookies recipe with flour and butter.",
+    );
+    fs.writeFileSync(
+      path.join(vaultDir, "b.md"),
+      "# Errors\n\nERR_REQUIRE_CYCLE_MODULE bug report filed today.",
+    );
+
+    const indexDir = path.join(tmpDir, "idx3");
+    fs.mkdirSync(indexDir);
+    const idx = new KnowledgeIndex(makeFtsOnlyConfig(indexDir), null);
+    await idx.load();
+    await idx.sync();
+
+    const cookieHits = await idx.search("cookies", 5);
+    assert.equal(cookieHits.length, 1);
+    assert.ok(cookieHits[0].path.endsWith("a.md"));
+
+    const errorHits = await idx.search("ERR_REQUIRE_CYCLE_MODULE", 5);
+    assert.equal(errorHits.length, 1);
+    assert.ok(errorHits[0].path.endsWith("b.md"));
+
+    // Scaled score should be sensible (top match near 100% when only 1 backend)
+    assert.ok(errorHits[0].score > 0.9, `score=${errorHits[0].score}`);
+
+    await idx.close();
+  });
+
+  it("vectorSearch() throws a clear error in FTS-only mode", async () => {
+    const indexDir = path.join(tmpDir, "idx4");
+    fs.mkdirSync(indexDir);
+    const idx = new KnowledgeIndex(makeFtsOnlyConfig(indexDir), null);
+    await idx.load();
+    await assert.rejects(
+      () => idx.vectorSearch("anything", 5),
+      /requires an embedder/,
+    );
+    await idx.close();
+  });
+
+  it("reopening an FTS-only index preserves all data", async () => {
+    fs.writeFileSync(path.join(vaultDir, "persistent.md"), "# Gate\n\nBlueberries and blackberries.");
+
+    const indexDir = path.join(tmpDir, "idx5");
+    fs.mkdirSync(indexDir);
+    const idx1 = new KnowledgeIndex(makeFtsOnlyConfig(indexDir), null);
+    await idx1.load();
+    await idx1.sync();
+    assert.equal(idx1.size(), 1);
+    await idx1.close();
+
+    const idx2 = new KnowledgeIndex(makeFtsOnlyConfig(indexDir), null);
+    await idx2.load();
+    // sync should be a no-op (mtime unchanged) — no embed cost incurred
+    const { added, updated } = await idx2.sync();
+    assert.equal(added, 0);
+    assert.equal(updated, 0);
+    const hits = await idx2.search("blueberries", 5);
+    assert.equal(hits.length, 1);
+    await idx2.close();
+  });
+});

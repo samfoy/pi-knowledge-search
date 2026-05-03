@@ -33,6 +33,10 @@ export default function (pi: ExtensionAPI) {
       const embedder = createEmbedder(currentConfig.provider, currentConfig.dimensions);
       index = new KnowledgeIndex(currentConfig, embedder);
       await index.load();
+    } else if (currentConfig.dirs.length > 0) {
+      // FTS-only mode — no embedder, keyword search still works zero-config.
+      index = new KnowledgeIndex(currentConfig, null);
+      await index.load();
     }
 
     if (currentConfig.knowledgeBases.length > 0) {
@@ -172,6 +176,7 @@ export default function (pi: ExtensionAPI) {
 
       // Step 4: Provider
       const providerChoice = await ctx.ui.select("Embedding provider:", [
+        "none — FTS-only keyword search (zero-config, no API key needed)",
         "openai — OpenAI API (text-embedding-3-small)",
         "bedrock — AWS Bedrock (Titan Embeddings v2)",
         "ollama — Local Ollama (nomic-embed-text)",
@@ -182,11 +187,20 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const providerType = providerChoice.split(" ")[0] as "openai" | "bedrock" | "ollama";
+      const providerType = providerChoice.split(" ")[0] as
+        | "none"
+        | "openai"
+        | "bedrock"
+        | "ollama";
 
       let configFile: ConfigFile;
 
       switch (providerType) {
+        case "none": {
+          // FTS-only: no provider, keyword search via SQLite FTS5.
+          configFile = { dirs, fileExtensions, excludeDirs };
+          break;
+        }
         case "openai": {
           const apiKey = await ctx.ui.input(
             "OpenAI API key (or env var name):",

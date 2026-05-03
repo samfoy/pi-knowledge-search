@@ -808,6 +808,7 @@ var INDEX_VERSION = 3;
 var MAX_EXCERPT_LENGTH = 3500;
 var KnowledgeIndex = class _KnowledgeIndex {
   config;
+  /** Embedder may be null in FTS-only mode (no provider configured). */
   embedder;
   data;
   dirty = false;
@@ -822,6 +823,10 @@ var KnowledgeIndex = class _KnowledgeIndex {
       entries: {}
     };
     this.fts = new FtsChunkIndex(config2.indexDir);
+  }
+  /** True when no embedder is configured — search runs pure BM25. */
+  get isFtsOnly() {
+    return this.embedder === null;
   }
   size() {
     const paths = /* @__PURE__ */ new Set();
@@ -870,7 +875,8 @@ var KnowledgeIndex = class _KnowledgeIndex {
           const raw = fs2.readFileSync(indexFile, "utf-8");
           parsed = JSON.parse(raw);
         }
-        if (parsed && parsed.version === INDEX_VERSION && parsed.dimensions === this.config.dimensions) {
+        const dimsOk = this.isFtsOnly || parsed?.dimensions === this.config.dimensions;
+        if (parsed && parsed.version === INDEX_VERSION && dimsOk) {
           this.data = parsed;
         }
       } catch {
@@ -1103,20 +1109,23 @@ ${chunkText}`;
           chunkMeta.push({ fileIdx: fi, chunkIdx: ci });
         }
       }
-      const BATCH_SIZE = 50;
       const allVectors = new Array(allChunkTexts.length).fill(null);
-      for (let i = 0; i < allChunkTexts.length; i += BATCH_SIZE) {
-        const batchTexts = allChunkTexts.slice(i, i + BATCH_SIZE);
-        const vectors = await this.embedder.embedBatch(batchTexts);
-        for (let j = 0; j < vectors.length; j++) {
-          allVectors[i + j] = vectors[j];
+      if (this.embedder) {
+        const BATCH_SIZE = 50;
+        for (let i = 0; i < allChunkTexts.length; i += BATCH_SIZE) {
+          const batchTexts = allChunkTexts.slice(i, i + BATCH_SIZE);
+          const vectors = await this.embedder.embedBatch(batchTexts);
+          for (let j = 0; j < vectors.length; j++) {
+            allVectors[i + j] = vectors[j];
+          }
         }
       }
       const processedFiles = /* @__PURE__ */ new Set();
       for (let i = 0; i < chunkMeta.length; i++) {
         const { fileIdx, chunkIdx } = chunkMeta[i];
         const vector = allVectors[i];
-        if (!vector) continue;
+        const storedVector = vector ?? [];
+        if (this.embedder && !vector) continue;
         const file = toProcess[fileIdx];
         if (!processedFiles.has(fileIdx)) {
           processedFiles.add(fileIdx);
@@ -1131,7 +1140,7 @@ ${chunkText}`;
           relPath: file.relPath,
           sourceDir: file.sourceDir,
           mtime: file.mtime,
-          vector,
+          vector: storedVector,
           excerpt,
           heading: chunk.heading,
           chunkIndex: chunkIdx
@@ -1167,8 +1176,16 @@ ${chunkText}`;
    *
    * In the `knowledge_search` tool path we call `search()` below, which
    * delegates to `hybridSearch()` by default.
+   *
+   * Throws if called in FTS-only mode — use `search()` or `hybridSearch()`
+   * which degrade gracefully.
    */
   async vectorSearch(query, limit, signal) {
+    if (!this.embedder) {
+      throw new Error(
+        "vectorSearch() requires an embedder \u2014 configure a provider or use search()/hybridSearch() instead."
+      );
+    }
     const queryVector = await this.embedder.embed(query, signal);
     const scored = [];
     for (const [key, entry] of Object.entries(this.data.entries)) {
@@ -1228,6 +1245,7 @@ ${chunkText}`;
     }
     const vecRanks = await vecPromise;
     if (vecRanks.size === 0 && ftsRanks.size === 0) return [];
+    const activeBackends = (vecRanks.size > 0 ? 1 : 0) + (ftsRanks.size > 0 ? 1 : 0);
     const fused = /* @__PURE__ */ new Map();
     for (const [key, r] of vecRanks) {
       fused.set(key, (fused.get(key) ?? 0) + 1 / (K + r));
@@ -1235,6 +1253,7 @@ ${chunkText}`;
     for (const [key, r] of ftsRanks) {
       fused.set(key, (fused.get(key) ?? 0) + 1 / (K + r));
     }
+    const displayScale = (K + 1) / Math.max(activeBackends, 1);
     const sorted = [...fused.entries()].sort((a, b) => b[1] - a[1]);
     const seen = /* @__PURE__ */ new Set();
     const out = [];
@@ -1243,17 +1262,18 @@ ${chunkText}`;
       const absPath = this.absPathFromKey(key);
       if (seen.has(absPath)) continue;
       seen.add(absPath);
+      const scaledScore = Math.min(score * displayScale, 1);
       if (entry) {
         out.push({
           path: absPath,
-          score,
+          score: scaledScore,
           excerpt: entry.excerpt,
           heading: entry.heading
         });
       } else {
         out.push({
           path: absPath,
-          score,
+          score: scaledScore,
           excerpt: "",
           heading: ""
         });
@@ -1268,6 +1288,7 @@ ${chunkText}`;
    * public escape hatch.
    */
   async runVectorRanks(query, poolSize, signal) {
+    if (!this.embedder) return /* @__PURE__ */ new Map();
     const queryVector = await this.embedder.embed(query, signal);
     const scored = [];
     for (const [key, entry] of Object.entries(this.data.entries)) {
@@ -1304,18 +1325,24 @@ ${chunkText}`;
       return;
     }
     this.removeAllChunks(absPath);
-    const texts = chunks.map((c) => this.chunkEmbedText(relPath, c.heading, c.text));
-    const vectors = await this.embedder.embedBatch(texts);
+    let vectors;
+    if (this.embedder) {
+      const texts = chunks.map((c) => this.chunkEmbedText(relPath, c.heading, c.text));
+      vectors = await this.embedder.embedBatch(texts);
+    } else {
+      vectors = new Array(chunks.length).fill(null);
+    }
     for (let i = 0; i < chunks.length; i++) {
       const vector = vectors[i];
-      if (!vector) continue;
+      if (this.embedder && !vector) continue;
+      const storedVector = vector ?? [];
       const key = this.entryKey(absPath, i);
       const excerpt = chunks[i].text.slice(0, MAX_EXCERPT_LENGTH);
       this.data.entries[key] = {
         relPath,
         sourceDir,
         mtime: stat.mtimeMs,
-        vector,
+        vector: storedVector,
         excerpt,
         heading: chunks[i].heading,
         chunkIndex: i
@@ -1433,10 +1460,10 @@ process.on("unhandledRejection", (reason) => {
   process.exit(1);
 });
 var config = loadConfig(process.env.KNOWLEDGE_SEARCH_CWD || void 0);
-if (!config || !config.provider) {
+if (!config || config.dirs.length === 0) {
   process.exit(0);
 }
-var embedder = createEmbedder(config.provider, config.dimensions);
+var embedder = config.provider ? createEmbedder(config.provider, config.dimensions) : null;
 var index = new KnowledgeIndex(config, embedder);
 await index.load();
 index.sync().then(({ added, updated, removed }) => {

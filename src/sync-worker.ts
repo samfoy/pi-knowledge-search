@@ -15,11 +15,13 @@ process.on("unhandledRejection", (reason) => {
 });
 
 const config = loadConfig(process.env.KNOWLEDGE_SEARCH_CWD || undefined);
-if (!config || !config.provider) {
+if (!config || config.dirs.length === 0) {
   process.exit(0);
 }
 
-const embedder = createEmbedder(config.provider, config.dimensions);
+const embedder = config.provider
+  ? createEmbedder(config.provider, config.dimensions)
+  : null;
 const index = new KnowledgeIndex(config, embedder);
 await index.load();
 

@@ -14,7 +14,7 @@ interface IndexEntry {
   sourceDir: string;
   /** File mtime (ms) at time of indexing */
   mtime: number;
-  /** Embedding vector */
+  /** Embedding vector (empty array when running FTS-only without an embedder) */
   vector: number[];
   /** This chunk's content for excerpt display */
   excerpt: string;
@@ -46,13 +46,14 @@ const MAX_EXCERPT_LENGTH = 3500; // Safety cap for stored excerpts
 
 export class KnowledgeIndex {
   private config: Config;
-  private embedder: Embedder;
+  /** Embedder may be null in FTS-only mode (no provider configured). */
+  private embedder: Embedder | null;
   private data: IndexData;
   private dirty = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private fts: FtsChunkIndex;
 
-  constructor(config: Config, embedder: Embedder) {
+  constructor(config: Config, embedder: Embedder | null) {
     this.config = config;
     this.embedder = embedder;
     this.data = {
@@ -61,6 +62,11 @@ export class KnowledgeIndex {
       entries: {},
     };
     this.fts = new FtsChunkIndex(config.indexDir);
+  }
+
+  /** True when no embedder is configured — search runs pure BM25. */
+  get isFtsOnly(): boolean {
+    return this.embedder === null;
   }
 
   size(): number {
@@ -115,11 +121,14 @@ export class KnowledgeIndex {
           const raw = fs.readFileSync(indexFile, "utf-8");
           parsed = JSON.parse(raw) as IndexData;
         }
-        if (
-          parsed &&
-          parsed.version === INDEX_VERSION &&
-          parsed.dimensions === this.config.dimensions
-        ) {
+        // Accept the on-disk index when:
+        //  - version matches AND
+        //  - dimensions match OR we're in FTS-only mode (dimensions are a
+        //    vector-only concern; FTS-only installs should never invalidate
+        //    a perfectly good entry map over them).
+        const dimsOk =
+          this.isFtsOnly || parsed?.dimensions === this.config.dimensions;
+        if (parsed && parsed.version === INDEX_VERSION && dimsOk) {
           this.data = parsed;
         }
         // Version or dimension mismatch → keep fresh data, caller will re-index.
@@ -402,15 +411,16 @@ export class KnowledgeIndex {
         }
       }
 
-      // Embed in batches
-      const BATCH_SIZE = 50;
+      // Embed in batches — skipped entirely in FTS-only mode.
       const allVectors: (number[] | null)[] = new Array(allChunkTexts.length).fill(null);
-
-      for (let i = 0; i < allChunkTexts.length; i += BATCH_SIZE) {
-        const batchTexts = allChunkTexts.slice(i, i + BATCH_SIZE);
-        const vectors = await this.embedder.embedBatch(batchTexts);
-        for (let j = 0; j < vectors.length; j++) {
-          allVectors[i + j] = vectors[j];
+      if (this.embedder) {
+        const BATCH_SIZE = 50;
+        for (let i = 0; i < allChunkTexts.length; i += BATCH_SIZE) {
+          const batchTexts = allChunkTexts.slice(i, i + BATCH_SIZE);
+          const vectors = await this.embedder.embedBatch(batchTexts);
+          for (let j = 0; j < vectors.length; j++) {
+            allVectors[i + j] = vectors[j];
+          }
         }
       }
 
@@ -420,7 +430,12 @@ export class KnowledgeIndex {
       for (let i = 0; i < chunkMeta.length; i++) {
         const { fileIdx, chunkIdx } = chunkMeta[i];
         const vector = allVectors[i];
-        if (!vector) continue;
+        // In FTS-only mode vector is null — store an empty array placeholder
+        // so the rest of the pipeline keeps its shape.
+        const storedVector: number[] = vector ?? [];
+        // Skip if we expected a vector (embedder was present) and got none
+        // — an embed failure shouldn't produce a silently vectorless entry.
+        if (this.embedder && !vector) continue;
 
         const file = toProcess[fileIdx];
 
@@ -439,7 +454,7 @@ export class KnowledgeIndex {
           relPath: file.relPath,
           sourceDir: file.sourceDir,
           mtime: file.mtime,
-          vector,
+          vector: storedVector,
           excerpt,
           heading: chunk.heading,
           chunkIndex: chunkIdx,
@@ -480,12 +495,20 @@ export class KnowledgeIndex {
    *
    * In the `knowledge_search` tool path we call `search()` below, which
    * delegates to `hybridSearch()` by default.
+   *
+   * Throws if called in FTS-only mode — use `search()` or `hybridSearch()`
+   * which degrade gracefully.
    */
   async vectorSearch(
     query: string,
     limit: number,
     signal?: AbortSignal,
   ): Promise<SearchResult[]> {
+    if (!this.embedder) {
+      throw new Error(
+        "vectorSearch() requires an embedder — configure a provider or use search()/hybridSearch() instead.",
+      );
+    }
     const queryVector = await this.embedder.embed(query, signal);
 
     const scored: { key: string; absPath: string; score: number }[] = [];
@@ -631,6 +654,7 @@ export class KnowledgeIndex {
     poolSize: number,
     signal?: AbortSignal,
   ): Promise<Map<string, number>> {
+    if (!this.embedder) return new Map();
     const queryVector = await this.embedder.embed(query, signal);
     const scored: { key: string; score: number }[] = [];
     for (const [key, entry] of Object.entries(this.data.entries)) {
@@ -676,13 +700,19 @@ export class KnowledgeIndex {
     // Remove old chunks for this file
     this.removeAllChunks(absPath);
 
-    // Embed and store each chunk
-    const texts = chunks.map((c) => this.chunkEmbedText(relPath, c.heading, c.text));
-    const vectors = await this.embedder.embedBatch(texts);
+    // Embed and store each chunk (vectors remain empty in FTS-only mode)
+    let vectors: (number[] | null)[];
+    if (this.embedder) {
+      const texts = chunks.map((c) => this.chunkEmbedText(relPath, c.heading, c.text));
+      vectors = await this.embedder.embedBatch(texts);
+    } else {
+      vectors = new Array(chunks.length).fill(null);
+    }
 
     for (let i = 0; i < chunks.length; i++) {
       const vector = vectors[i];
-      if (!vector) continue;
+      if (this.embedder && !vector) continue;
+      const storedVector: number[] = vector ?? [];
 
       const key = this.entryKey(absPath, i);
       const excerpt = chunks[i].text.slice(0, MAX_EXCERPT_LENGTH);
@@ -690,7 +720,7 @@ export class KnowledgeIndex {
         relPath,
         sourceDir,
         mtime: stat.mtimeMs,
-        vector,
+        vector: storedVector,
         excerpt,
         heading: chunks[i].heading,
         chunkIndex: i,
