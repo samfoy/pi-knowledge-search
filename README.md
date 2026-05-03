@@ -211,6 +211,38 @@ Typical numbers for ~500 markdown files (~20MB):
 | Search query                  | ~250ms |
 | Index file size               | ~5MB   |
 
+## Project-local storage
+
+By default, config lives at `~/.pi/knowledge-search.json` and the index at `~/.pi/knowledge-search/`. To relocate per-project, add one of the following to `{project}/.pi/settings.json`:
+
+```jsonc
+{
+  "pi-knowledge-search": {
+    "localPath": ".pi/knowledge-search"   // config.json + index/ under this path
+  }
+}
+```
+
+Or via the [`pi-total-recall`](https://github.com/samfoy/pi-total-recall) cascade:
+
+```jsonc
+{
+  "pi-total-recall": {
+    "localPath": ".pi/total-recall"
+    // pi-knowledge-search → {project}/.pi/total-recall/knowledge-search/
+  }
+}
+```
+
+**Resolution order (highest priority first):**
+
+1. `KNOWLEDGE_SEARCH_CONFIG` / `KNOWLEDGE_SEARCH_INDEX_DIR` env vars
+2. `pi-knowledge-search.localPath` in `{cwd}/.pi/settings.json`
+3. `pi-total-recall.localPath` cascade → `{localPath}/knowledge-search/`
+4. Global default: `~/.pi/knowledge-search.json` + `~/.pi/knowledge-search/`
+
+Per-project indexes are particularly useful for vault- or doc-tree-scoped embeddings where you don't want cross-project bleed.
+
 ## License
 
 MIT

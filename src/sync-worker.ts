@@ -14,7 +14,7 @@ process.on("unhandledRejection", (reason) => {
   process.exit(1);
 });
 
-const config = loadConfig();
+const config = loadConfig(process.env.KNOWLEDGE_SEARCH_CWD || undefined);
 if (!config || !config.provider) {
   process.exit(0);
 }

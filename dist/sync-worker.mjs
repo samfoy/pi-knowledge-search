@@ -3,12 +3,47 @@
 // src/config.ts
 import * as fs from "node:fs";
 import * as path from "node:path";
-var CONFIG_PATH = process.env.KNOWLEDGE_SEARCH_CONFIG || path.join(process.env.HOME || "/tmp", ".pi", "knowledge-search.json");
-function loadConfig() {
+function globalConfigFile() {
+  return path.join(process.env.HOME || "/tmp", ".pi", "knowledge-search.json");
+}
+function globalIndexDir() {
+  return path.join(process.env.HOME || "/tmp", ".pi", "knowledge-search");
+}
+function resolveLocalBase(cwd) {
+  if (!cwd) return null;
+  try {
+    const raw = fs.readFileSync(path.join(cwd, ".pi", "settings.json"), "utf-8");
+    const settings = JSON.parse(raw) ?? {};
+    const ks = settings["pi-knowledge-search"];
+    if (ks && typeof ks === "object" && typeof ks.localPath === "string" && ks.localPath) {
+      return ks.localPath;
+    }
+    const tr = settings["pi-total-recall"];
+    if (tr && typeof tr === "object" && typeof tr.localPath === "string" && tr.localPath) {
+      return path.join(tr.localPath, "knowledge-search");
+    }
+  } catch {
+  }
+  return null;
+}
+function getConfigPath(cwd) {
+  if (process.env.KNOWLEDGE_SEARCH_CONFIG) return process.env.KNOWLEDGE_SEARCH_CONFIG;
+  const base = resolveLocalBase(cwd);
+  if (base) return path.join(base, "config.json");
+  return globalConfigFile();
+}
+function getIndexDir(cwd) {
+  if (process.env.KNOWLEDGE_SEARCH_INDEX_DIR) return process.env.KNOWLEDGE_SEARCH_INDEX_DIR;
+  const base = resolveLocalBase(cwd);
+  if (base) return path.join(base, "index");
+  return globalIndexDir();
+}
+function loadConfig(cwd) {
+  const configPath = getConfigPath(cwd);
   let file = null;
-  if (fs.existsSync(CONFIG_PATH)) {
+  if (fs.existsSync(configPath)) {
     try {
-      file = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+      file = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     } catch {
     }
   }
@@ -86,7 +121,7 @@ function loadConfig() {
         );
     }
   }
-  const indexDir = envStr("KNOWLEDGE_SEARCH_INDEX_DIR") ?? path.join(home, ".pi", "knowledge-search");
+  const indexDir = getIndexDir(cwd);
   return {
     dirs,
     fileExtensions,
@@ -1073,7 +1108,7 @@ process.on("unhandledRejection", (reason) => {
 `);
   process.exit(1);
 });
-var config = loadConfig();
+var config = loadConfig(process.env.KNOWLEDGE_SEARCH_CWD || void 0);
 if (!config || !config.provider) {
   process.exit(0);
 }

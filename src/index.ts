@@ -12,6 +12,7 @@ export default function (pi: ExtensionAPI) {
   let index: KnowledgeIndex | null = null;
   let kbSearcher: BedrockKBSearcher | null = null;
   let currentConfig: Config | null = null;
+  let sessionCwd: string | undefined;
   let syncDone = false;
   let workerExitExpected = false;
 
@@ -20,8 +21,9 @@ export default function (pi: ExtensionAPI) {
   // ------------------------------------------------------------------
 
   pi.on("session_start", async (_event, ctx) => {
+    sessionCwd = ctx.cwd;
     try {
-      currentConfig = loadConfig();
+      currentConfig = loadConfig(sessionCwd);
     } catch {
       return;
     }
@@ -54,7 +56,9 @@ export default function (pi: ExtensionAPI) {
       const workerPath = join(import.meta.dirname, "..", "dist", "sync-worker.mjs");
       const worker = fork(workerPath, [], {
         stdio: ["ignore", "pipe", "pipe", "ipc"],
-        env: { ...process.env },
+        // Forward sessionCwd so the worker resolves the same project-local
+        // settings.json (pi-knowledge-search.localPath / pi-total-recall cascade).
+        env: { ...process.env, KNOWLEDGE_SEARCH_CWD: sessionCwd ?? process.env.KNOWLEDGE_SEARCH_CWD ?? "" },
       });
 
       let stdout = "";
@@ -236,8 +240,8 @@ export default function (pi: ExtensionAPI) {
       }
 
       // Save and confirm
-      saveConfig(configFile!);
-      ctx.ui.notify(`Config saved to ${getConfigPath()}. Run /reload to activate.`, "info");
+      saveConfig(configFile!, sessionCwd);
+      ctx.ui.notify(`Config saved to ${getConfigPath(sessionCwd)}. Run /reload to activate.`, "info");
     },
   });
 
@@ -263,10 +267,10 @@ export default function (pi: ExtensionAPI) {
       // Load existing config or create minimal one
       let existing: ConfigFile;
       try {
-        const loaded = loadConfig();
+        const loaded = loadConfig(sessionCwd);
         if (loaded) {
           // Read the raw file to preserve structure
-          const raw = fs.readFileSync(getConfigPath(), "utf-8");
+          const raw = fs.readFileSync(getConfigPath(sessionCwd), "utf-8");
           existing = JSON.parse(raw);
         } else {
           existing = {};
@@ -290,7 +294,7 @@ export default function (pi: ExtensionAPI) {
         ...(label ? { label } : {}),
       });
 
-      saveConfig(existing as ConfigFile);
+      saveConfig(existing as ConfigFile, sessionCwd);
       ctx.ui.notify(
         `Added KB ${kbId}${label ? ` (${label})` : ""}. Run /reload to activate.`,
         "info"

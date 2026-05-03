@@ -39,24 +39,87 @@ export interface ConfigFile {
     | { type: "ollama"; url?: string; model?: string };
 }
 
-const CONFIG_PATH =
-  process.env.KNOWLEDGE_SEARCH_CONFIG ||
-  path.join(process.env.HOME || "/tmp", ".pi", "knowledge-search.json");
+// Lazy so HOME changes at runtime (tests, sandboxes) are honored.
+function globalConfigFile(): string {
+  return path.join(process.env.HOME || "/tmp", ".pi", "knowledge-search.json");
+}
+function globalIndexDir(): string {
+  return path.join(process.env.HOME || "/tmp", ".pi", "knowledge-search");
+}
 
-export function getConfigPath(): string {
-  return CONFIG_PATH;
+/**
+ * Resolve a project-local base directory for pi-knowledge-search storage.
+ *
+ * Resolution order (highest priority first):
+ *   1. {cwd}/.pi/settings.json → "pi-knowledge-search".localPath
+ *   2. {cwd}/.pi/settings.json → "pi-total-recall".localPath → {localPath}/knowledge-search
+ *
+ * When set, config is stored at {base}/config.json and index at {base}/index.
+ * Environment variables (KNOWLEDGE_SEARCH_CONFIG / KNOWLEDGE_SEARCH_INDEX_DIR)
+ * take precedence over both.
+ *
+ * Returns null when no project-local override is configured.
+ */
+export function resolveLocalBase(cwd?: string): string | null {
+  if (!cwd) return null;
+  try {
+    const raw = fs.readFileSync(path.join(cwd, ".pi", "settings.json"), "utf-8");
+    const settings = JSON.parse(raw) ?? {};
+
+    // Package-specific override wins.
+    const ks = settings["pi-knowledge-search"];
+    if (ks && typeof ks === "object" && typeof ks.localPath === "string" && ks.localPath) {
+      return ks.localPath;
+    }
+
+    // pi-total-recall cascade.
+    const tr = settings["pi-total-recall"];
+    if (tr && typeof tr === "object" && typeof tr.localPath === "string" && tr.localPath) {
+      return path.join(tr.localPath, "knowledge-search");
+    }
+  } catch {
+    // No settings file, unreadable, or malformed — fall through to global.
+  }
+  return null;
+}
+
+/**
+ * Resolve the config file path. Priority:
+ *   1. KNOWLEDGE_SEARCH_CONFIG env var (explicit override)
+ *   2. Project-local base ({base}/config.json)
+ *   3. Global default (~/.pi/knowledge-search.json)
+ */
+export function getConfigPath(cwd?: string): string {
+  if (process.env.KNOWLEDGE_SEARCH_CONFIG) return process.env.KNOWLEDGE_SEARCH_CONFIG;
+  const base = resolveLocalBase(cwd);
+  if (base) return path.join(base, "config.json");
+  return globalConfigFile();
+}
+
+/**
+ * Resolve the index directory. Priority matches getConfigPath().
+ */
+export function getIndexDir(cwd?: string): string {
+  if (process.env.KNOWLEDGE_SEARCH_INDEX_DIR) return process.env.KNOWLEDGE_SEARCH_INDEX_DIR;
+  const base = resolveLocalBase(cwd);
+  if (base) return path.join(base, "index");
+  return globalIndexDir();
 }
 
 /**
  * Load config from file, with env var overrides.
  * Returns null if no config file exists (needs setup).
+ *
+ * @param cwd - Optional working directory; enables project-local resolution.
  */
-export function loadConfig(): Config | null {
+export function loadConfig(cwd?: string): Config | null {
+  const configPath = getConfigPath(cwd);
+
   // Try config file first
   let file: ConfigFile | null = null;
-  if (fs.existsSync(CONFIG_PATH)) {
+  if (fs.existsSync(configPath)) {
     try {
-      file = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+      file = JSON.parse(fs.readFileSync(configPath, "utf-8"));
     } catch {
       // Corrupted file
     }
@@ -195,8 +258,7 @@ export function loadConfig(): Config | null {
     }
   } // end if (providerType)
 
-  const indexDir =
-    envStr("KNOWLEDGE_SEARCH_INDEX_DIR") ?? path.join(home, ".pi", "knowledge-search");
+  const indexDir = getIndexDir(cwd);
 
   return {
     dirs,
@@ -211,11 +273,15 @@ export function loadConfig(): Config | null {
 
 /**
  * Save config to file.
+ *
+ * @param config - Config data to write.
+ * @param cwd - Optional working directory; enables project-local resolution.
  */
-export function saveConfig(config: ConfigFile): void {
-  const dir = path.dirname(CONFIG_PATH);
+export function saveConfig(config: ConfigFile, cwd?: string): void {
+  const configPath = getConfigPath(cwd);
+  const dir = path.dirname(configPath);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
 }
 
 function envStr(key: string): string | undefined {
