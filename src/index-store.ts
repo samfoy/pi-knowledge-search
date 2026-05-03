@@ -5,6 +5,7 @@ import makeParser from "stream-json/index.js";
 import type { Config } from "./config.js";
 import type { Embedder } from "./embedder.js";
 import { chunkMarkdown, type Chunk } from "./chunker.js";
+import { FtsChunkIndex, type FtsChunk } from "./fts-index.js";
 
 interface IndexEntry {
   /** Relative path from its source directory root */
@@ -49,6 +50,7 @@ export class KnowledgeIndex {
   private data: IndexData;
   private dirty = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private fts: FtsChunkIndex;
 
   constructor(config: Config, embedder: Embedder) {
     this.config = config;
@@ -58,6 +60,7 @@ export class KnowledgeIndex {
       dimensions: config.dimensions,
       entries: {},
     };
+    this.fts = new FtsChunkIndex(config.indexDir);
   }
 
   size(): number {
@@ -99,29 +102,61 @@ export class KnowledgeIndex {
    * re-index. Never throws.
    */
   async load(): Promise<void> {
-    const indexFile = path.join(this.config.indexDir, "index.json");
-    if (!fs.existsSync(indexFile)) return;
+    this.fts.load();
 
-    try {
-      let parsed: IndexData | null = null;
-      const size = fs.statSync(indexFile).size;
-      if (size >= KnowledgeIndex.STREAMING_THRESHOLD_BYTES) {
-        parsed = await this.streamLoadJson(indexFile);
-      } else {
-        const raw = fs.readFileSync(indexFile, "utf-8");
-        parsed = JSON.parse(raw) as IndexData;
+    const indexFile = path.join(this.config.indexDir, "index.json");
+    if (fs.existsSync(indexFile)) {
+      try {
+        let parsed: IndexData | null = null;
+        const size = fs.statSync(indexFile).size;
+        if (size >= KnowledgeIndex.STREAMING_THRESHOLD_BYTES) {
+          parsed = await this.streamLoadJson(indexFile);
+        } else {
+          const raw = fs.readFileSync(indexFile, "utf-8");
+          parsed = JSON.parse(raw) as IndexData;
+        }
+        if (
+          parsed &&
+          parsed.version === INDEX_VERSION &&
+          parsed.dimensions === this.config.dimensions
+        ) {
+          this.data = parsed;
+        }
+        // Version or dimension mismatch → keep fresh data, caller will re-index.
+      } catch {
+        // Corrupt file / partial write / IO error → fresh index.
       }
-      if (
-        parsed &&
-        parsed.version === INDEX_VERSION &&
-        parsed.dimensions === this.config.dimensions
-      ) {
-        this.data = parsed;
-      }
-      // Version or dimension mismatch → keep fresh data, caller will re-index.
-    } catch {
-      // Corrupt file / partial write / IO error → fresh index.
     }
+
+    // Backfill FTS side-car from the vector index when it's empty but the
+    // JSON index is populated. Handles first-run upgrades from pre-hybrid
+    // versions without forcing a full re-embed.
+    const chunkCount = this.chunkCount();
+    if (chunkCount > 0 && this.fts.count() === 0) {
+      this.rebuildFtsFromEntries();
+    }
+  }
+
+  /**
+   * Repopulate the FTS side-car from the in-memory JSON entries. Used on
+   * first load after upgrading to hybrid search so existing users don't
+   * pay the cost of re-embedding just to get keyword search.
+   */
+  private rebuildFtsFromEntries(): void {
+    const chunks: FtsChunk[] = [];
+    for (const [key, entry] of Object.entries(this.data.entries)) {
+      chunks.push({
+        key,
+        absPath: this.absPathFromKey(key),
+        relPath: entry.relPath,
+        sourceDir: entry.sourceDir,
+        heading: entry.heading,
+        content: entry.excerpt,
+        chunkIndex: entry.chunkIndex,
+        mtime: entry.mtime,
+      });
+    }
+    if (chunks.length > 0) this.fts.upsertMany(chunks);
   }
 
   private streamLoadJson(file: string): Promise<IndexData | null> {
@@ -273,7 +308,8 @@ export class KnowledgeIndex {
   }
 
   /**
-   * Remove all chunks for a given absolute file path.
+   * Remove all chunks for a given absolute file path from both the vector
+   * store and the FTS side-car.
    */
   private removeAllChunks(absPath: string): number {
     const prefix = absPath + "#";
@@ -285,6 +321,13 @@ export class KnowledgeIndex {
     }
     for (const key of toRemove) {
       delete this.data.entries[key];
+    }
+    // Always clear FTS rows for this path too — FTS may hold entries even
+    // when the vector side doesn't (e.g. if a previous embed batch failed).
+    try {
+      this.fts.deleteByAbsPath(absPath);
+    } catch {
+      // FTS not loaded yet — nothing to remove.
     }
     return toRemove.length;
   }
@@ -391,15 +434,26 @@ export class KnowledgeIndex {
 
         const chunk = file.chunks[chunkIdx];
         const key = this.entryKey(file.absPath, chunkIdx);
+        const excerpt = chunk.text.slice(0, MAX_EXCERPT_LENGTH);
         this.data.entries[key] = {
           relPath: file.relPath,
           sourceDir: file.sourceDir,
           mtime: file.mtime,
           vector,
-          excerpt: chunk.text.slice(0, MAX_EXCERPT_LENGTH),
+          excerpt,
           heading: chunk.heading,
           chunkIndex: chunkIdx,
         };
+        this.fts.upsert({
+          key,
+          absPath: file.absPath,
+          relPath: file.relPath,
+          sourceDir: file.sourceDir,
+          heading: chunk.heading,
+          content: excerpt,
+          chunkIndex: chunkIdx,
+          mtime: file.mtime,
+        });
       }
     }
 
@@ -412,10 +466,26 @@ export class KnowledgeIndex {
 
   async rebuild(): Promise<void> {
     this.data.entries = {};
+    try {
+      this.fts.clear();
+    } catch {
+      // FTS not loaded — sync will populate it.
+    }
     await this.sync();
   }
 
-  async search(query: string, limit: number, signal?: AbortSignal): Promise<SearchResult[]> {
+  /**
+   * Pure vector search. Retained as an escape hatch for callers that
+   * explicitly want cosine-only ranking (tests, A/B comparisons).
+   *
+   * In the `knowledge_search` tool path we call `search()` below, which
+   * delegates to `hybridSearch()` by default.
+   */
+  async vectorSearch(
+    query: string,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<SearchResult[]> {
     const queryVector = await this.embedder.embed(query, signal);
 
     const scored: { key: string; absPath: string; score: number }[] = [];
@@ -449,6 +519,133 @@ export class KnowledgeIndex {
           heading: entry.heading,
         };
       });
+  }
+
+  /**
+   * Default search path used by the `knowledge_search` tool. Delegates to
+   * hybrid (vector + BM25 fused via Reciprocal Rank Fusion).
+   */
+  async search(query: string, limit: number, signal?: AbortSignal): Promise<SearchResult[]> {
+    return this.hybridSearch(query, limit, signal);
+  }
+
+  /**
+   * Hybrid search: cosine embeddings + FTS5 BM25, fused via Reciprocal Rank
+   * Fusion (k=60). Falls back gracefully:
+   *   - no FTS hits or empty side-car → pure vector
+   *   - embedding call fails (network blip, rate limit) → pure BM25
+   *   - both fail → empty
+   *
+   * Deduplicates so only the best chunk per file is returned.
+   */
+  async hybridSearch(
+    query: string,
+    limit: number,
+    signal?: AbortSignal,
+  ): Promise<SearchResult[]> {
+    const K = 60;
+    // Pool size: pull 5× the requested limit from each backend so RRF has
+    // enough candidates to rerank across. Matches session-search tuning.
+    const poolSize = Math.max(limit * 5, 50);
+
+    // Kick off both searches in parallel. Catch individually so one backend
+    // failing doesn't take down the other.
+    const vecPromise = this.runVectorRanks(query, poolSize, signal).catch((err) => {
+      // Surface a readable hint on first failure; swallow otherwise.
+      if (process.env.KNOWLEDGE_SEARCH_DEBUG) {
+        console.error(`knowledge-search: vector search failed: ${(err as Error).message}`);
+      }
+      return new Map<string, number>();
+    });
+    let ftsRanks: Map<string, number>;
+    try {
+      ftsRanks = this.fts.searchRanks(query, poolSize);
+    } catch {
+      ftsRanks = new Map();
+    }
+    const vecRanks = await vecPromise;
+
+    if (vecRanks.size === 0 && ftsRanks.size === 0) return [];
+
+    // RRF fusion: score = Σ 1 / (k + rank) across all backends that hit this key.
+    // Count active backends so the display scaling below makes sense when one
+    // backend short-circuits (pure-BM25 fallback, vector-only fallback).
+    const activeBackends =
+      (vecRanks.size > 0 ? 1 : 0) + (ftsRanks.size > 0 ? 1 : 0);
+    const fused = new Map<string, number>();
+    for (const [key, r] of vecRanks) {
+      fused.set(key, (fused.get(key) ?? 0) + 1 / (K + r));
+    }
+    for (const [key, r] of ftsRanks) {
+      fused.set(key, (fused.get(key) ?? 0) + 1 / (K + r));
+    }
+
+    // Scale for display: theoretical max RRF score when every active backend
+    // ranks a key at position 1 is `activeBackends / (K + 1)`. Dividing by
+    // that max maps a perfect hit to 1.0, keeping the existing
+    // `(score * 100).toFixed(1)`-based "X% match" UI meaningful.
+    const displayScale = (K + 1) / Math.max(activeBackends, 1);
+
+    // Rank by fused score.
+    const sorted = [...fused.entries()].sort((a, b) => b[1] - a[1]);
+
+    // Dedup: keep only the best chunk per file.
+    const seen = new Set<string>();
+    const out: SearchResult[] = [];
+    for (const [key, score] of sorted) {
+      const entry = this.data.entries[key];
+      // Key might exist in FTS but not in vector store if vector side is
+      // stale. Look up excerpt/heading via FTS fallback in that case.
+      const absPath = this.absPathFromKey(key);
+      if (seen.has(absPath)) continue;
+      seen.add(absPath);
+      const scaledScore = Math.min(score * displayScale, 1);
+      if (entry) {
+        out.push({
+          path: absPath,
+          score: scaledScore,
+          excerpt: entry.excerpt,
+          heading: entry.heading,
+        });
+      } else {
+        // Vector-less — synthesise from whatever FTS has.
+        out.push({
+          path: absPath,
+          score: scaledScore,
+          excerpt: "",
+          heading: "",
+        });
+      }
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /**
+   * Run the vector side of hybrid search and return ranked keys as a
+   * Map<key, rank> (1-based). Kept internal — `vectorSearch()` is the
+   * public escape hatch.
+   */
+  private async runVectorRanks(
+    query: string,
+    poolSize: number,
+    signal?: AbortSignal,
+  ): Promise<Map<string, number>> {
+    const queryVector = await this.embedder.embed(query, signal);
+    const scored: { key: string; score: number }[] = [];
+    for (const [key, entry] of Object.entries(this.data.entries)) {
+      if (!entry.vector) continue;
+      const score = dotProduct(queryVector, entry.vector);
+      // Mirror the existing 0.15 floor from vectorSearch so noise doesn't
+      // pollute RRF candidates.
+      if (score <= 0.15) continue;
+      scored.push({ key, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const out = new Map<string, number>();
+    const n = Math.min(scored.length, poolSize);
+    for (let i = 0; i < n; i++) out.set(scored[i].key, i + 1);
+    return out;
   }
 
   /**
@@ -488,15 +685,26 @@ export class KnowledgeIndex {
       if (!vector) continue;
 
       const key = this.entryKey(absPath, i);
+      const excerpt = chunks[i].text.slice(0, MAX_EXCERPT_LENGTH);
       this.data.entries[key] = {
         relPath,
         sourceDir,
         mtime: stat.mtimeMs,
         vector,
-        excerpt: chunks[i].text.slice(0, MAX_EXCERPT_LENGTH),
+        excerpt,
         heading: chunks[i].heading,
         chunkIndex: i,
       };
+      this.fts.upsert({
+        key,
+        absPath,
+        relPath,
+        sourceDir,
+        heading: chunks[i].heading,
+        content: excerpt,
+        chunkIndex: i,
+        mtime: stat.mtimeMs,
+      });
     }
     this.scheduleSave();
   }
@@ -521,6 +729,11 @@ export class KnowledgeIndex {
     }
     if (this.dirty) {
       await this.save();
+    }
+    try {
+      this.fts.close();
+    } catch {
+      // already closed
     }
   }
 

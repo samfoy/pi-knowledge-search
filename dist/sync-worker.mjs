@@ -637,6 +637,172 @@ function mergeTiny(chunks, minSize, maxSize) {
   return merged;
 }
 
+// src/fts-index.ts
+import { DatabaseSync } from "node:sqlite";
+import { mkdirSync as mkdirSync2 } from "node:fs";
+import { join as join2 } from "node:path";
+var FtsChunkIndex = class {
+  db = null;
+  dbPath;
+  constructor(indexDir) {
+    mkdirSync2(indexDir, { recursive: true });
+    this.dbPath = join2(indexDir, "kb-fts.db");
+  }
+  load() {
+    if (this.db) return;
+    this.db = new DatabaseSync(this.dbPath);
+    this.db.exec("PRAGMA busy_timeout = 5000;");
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS chunks USING fts5(
+        key UNINDEXED,
+        absPath UNINDEXED,
+        relPath UNINDEXED,
+        sourceDir UNINDEXED,
+        chunkIndex UNINDEXED,
+        mtime UNINDEXED,
+        heading,
+        content,
+        tokenize='porter unicode61'
+      );
+    `);
+  }
+  requireDb() {
+    if (!this.db) throw new Error("FtsChunkIndex: load() not called");
+    return this.db;
+  }
+  count() {
+    const db = this.requireDb();
+    const row = db.prepare("SELECT COUNT(*) AS n FROM chunks").get();
+    return Number(row?.n ?? 0);
+  }
+  /** Number of distinct absPaths in the index. */
+  fileCount() {
+    const db = this.requireDb();
+    const row = db.prepare("SELECT COUNT(DISTINCT absPath) AS n FROM chunks").get();
+    return Number(row?.n ?? 0);
+  }
+  /**
+   * Insert or replace a single chunk. Safe to call repeatedly — matches by
+   * `key`, which is unique per `${absPath}#${chunkIndex}` pair.
+   */
+  upsert(chunk) {
+    const db = this.requireDb();
+    db.prepare("DELETE FROM chunks WHERE key = ?").run(chunk.key);
+    db.prepare(
+      `INSERT INTO chunks (key, absPath, relPath, sourceDir, chunkIndex, mtime, heading, content)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      chunk.key,
+      chunk.absPath,
+      chunk.relPath,
+      chunk.sourceDir,
+      chunk.chunkIndex,
+      Math.round(chunk.mtime),
+      chunk.heading ?? "",
+      chunk.content ?? ""
+    );
+  }
+  /** Bulk upsert inside a single transaction for much higher throughput. */
+  upsertMany(chunks) {
+    const db = this.requireDb();
+    const del = db.prepare("DELETE FROM chunks WHERE key = ?");
+    const ins = db.prepare(
+      `INSERT INTO chunks (key, absPath, relPath, sourceDir, chunkIndex, mtime, heading, content)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    db.exec("BEGIN");
+    try {
+      for (const c of chunks) {
+        del.run(c.key);
+        ins.run(
+          c.key,
+          c.absPath,
+          c.relPath,
+          c.sourceDir,
+          c.chunkIndex,
+          Math.round(c.mtime),
+          c.heading ?? "",
+          c.content ?? ""
+        );
+      }
+      db.exec("COMMIT");
+    } catch (err) {
+      db.exec("ROLLBACK");
+      throw err;
+    }
+  }
+  /** Delete a single chunk by its key. */
+  delete(key) {
+    this.requireDb().prepare("DELETE FROM chunks WHERE key = ?").run(key);
+  }
+  /** Delete every chunk belonging to a given absolute file path. */
+  deleteByAbsPath(absPath) {
+    const res = this.requireDb().prepare("DELETE FROM chunks WHERE absPath = ?").run(absPath);
+    return Number(res.changes ?? 0);
+  }
+  /** Remove all entries. */
+  clear() {
+    this.requireDb().exec("DELETE FROM chunks");
+  }
+  /**
+   * Plain keyword search. Returns hits with BM25 normalised into a 0..1-ish
+   * relevance score (higher is better) for display alongside vector scores.
+   */
+  search(query, limit = 20) {
+    const fts = toFtsQuery(query);
+    if (!fts) return [];
+    const db = this.requireDb();
+    const rows = db.prepare(
+      `SELECT key, absPath, relPath, heading, content, bm25(chunks) AS score
+           FROM chunks
+          WHERE chunks MATCH ?
+          ORDER BY score
+          LIMIT ?`
+    ).all(fts, limit);
+    return rows.map((r) => {
+      const raw = Number(r.score);
+      const score = 1 / (1 + Math.abs(raw));
+      return {
+        key: String(r.key),
+        absPath: String(r.absPath),
+        relPath: String(r.relPath),
+        heading: String(r.heading ?? ""),
+        content: String(r.content ?? ""),
+        score
+      };
+    });
+  }
+  /**
+   * Return a Map<entryKey, rank> for RRF fusion. Rank is 1-based (best = 1).
+   * Optionally restrict to a subset of candidate keys.
+   */
+  searchRanks(query, limit = 200, allowedKeys) {
+    const fts = toFtsQuery(query);
+    const out = /* @__PURE__ */ new Map();
+    if (!fts) return out;
+    const db = this.requireDb();
+    const rows = db.prepare(
+      `SELECT key FROM chunks WHERE chunks MATCH ? ORDER BY bm25(chunks) LIMIT ?`
+    ).all(fts, limit);
+    let r = 1;
+    for (const row of rows) {
+      const key = String(row.key);
+      if (allowedKeys && !allowedKeys.has(key)) continue;
+      out.set(key, r++);
+    }
+    return out;
+  }
+  close() {
+    if (!this.db) return;
+    this.db.close();
+    this.db = null;
+  }
+};
+function toFtsQuery(q) {
+  const terms = q.replace(/["^*():{}[\]]/g, " ").split(/\s+/).map((t) => t.trim()).filter((t) => t.length > 0).map((t) => `"${t}"`);
+  return terms.join(" ");
+}
+
 // src/index-store.ts
 var INDEX_VERSION = 3;
 var MAX_EXCERPT_LENGTH = 3500;
@@ -646,6 +812,7 @@ var KnowledgeIndex = class _KnowledgeIndex {
   data;
   dirty = false;
   saveTimer = null;
+  fts;
   constructor(config2, embedder2) {
     this.config = config2;
     this.embedder = embedder2;
@@ -654,6 +821,7 @@ var KnowledgeIndex = class _KnowledgeIndex {
       dimensions: config2.dimensions,
       entries: {}
     };
+    this.fts = new FtsChunkIndex(config2.indexDir);
   }
   size() {
     const paths = /* @__PURE__ */ new Set();
@@ -690,22 +858,49 @@ var KnowledgeIndex = class _KnowledgeIndex {
    * re-index. Never throws.
    */
   async load() {
+    this.fts.load();
     const indexFile = path2.join(this.config.indexDir, "index.json");
-    if (!fs2.existsSync(indexFile)) return;
-    try {
-      let parsed = null;
-      const size = fs2.statSync(indexFile).size;
-      if (size >= _KnowledgeIndex.STREAMING_THRESHOLD_BYTES) {
-        parsed = await this.streamLoadJson(indexFile);
-      } else {
-        const raw = fs2.readFileSync(indexFile, "utf-8");
-        parsed = JSON.parse(raw);
+    if (fs2.existsSync(indexFile)) {
+      try {
+        let parsed = null;
+        const size = fs2.statSync(indexFile).size;
+        if (size >= _KnowledgeIndex.STREAMING_THRESHOLD_BYTES) {
+          parsed = await this.streamLoadJson(indexFile);
+        } else {
+          const raw = fs2.readFileSync(indexFile, "utf-8");
+          parsed = JSON.parse(raw);
+        }
+        if (parsed && parsed.version === INDEX_VERSION && parsed.dimensions === this.config.dimensions) {
+          this.data = parsed;
+        }
+      } catch {
       }
-      if (parsed && parsed.version === INDEX_VERSION && parsed.dimensions === this.config.dimensions) {
-        this.data = parsed;
-      }
-    } catch {
     }
+    const chunkCount = this.chunkCount();
+    if (chunkCount > 0 && this.fts.count() === 0) {
+      this.rebuildFtsFromEntries();
+    }
+  }
+  /**
+   * Repopulate the FTS side-car from the in-memory JSON entries. Used on
+   * first load after upgrading to hybrid search so existing users don't
+   * pay the cost of re-embedding just to get keyword search.
+   */
+  rebuildFtsFromEntries() {
+    const chunks = [];
+    for (const [key, entry] of Object.entries(this.data.entries)) {
+      chunks.push({
+        key,
+        absPath: this.absPathFromKey(key),
+        relPath: entry.relPath,
+        sourceDir: entry.sourceDir,
+        heading: entry.heading,
+        content: entry.excerpt,
+        chunkIndex: entry.chunkIndex,
+        mtime: entry.mtime
+      });
+    }
+    if (chunks.length > 0) this.fts.upsertMany(chunks);
   }
   streamLoadJson(file) {
     return new Promise((resolve, reject) => {
@@ -838,7 +1033,8 @@ var KnowledgeIndex = class _KnowledgeIndex {
     return hashIdx >= 0 ? key.slice(0, hashIdx) : key;
   }
   /**
-   * Remove all chunks for a given absolute file path.
+   * Remove all chunks for a given absolute file path from both the vector
+   * store and the FTS side-car.
    */
   removeAllChunks(absPath) {
     const prefix = absPath + "#";
@@ -850,6 +1046,10 @@ var KnowledgeIndex = class _KnowledgeIndex {
     }
     for (const key of toRemove) {
       delete this.data.entries[key];
+    }
+    try {
+      this.fts.deleteByAbsPath(absPath);
+    } catch {
     }
     return toRemove.length;
   }
@@ -926,15 +1126,26 @@ ${chunkText}`;
         }
         const chunk = file.chunks[chunkIdx];
         const key = this.entryKey(file.absPath, chunkIdx);
+        const excerpt = chunk.text.slice(0, MAX_EXCERPT_LENGTH);
         this.data.entries[key] = {
           relPath: file.relPath,
           sourceDir: file.sourceDir,
           mtime: file.mtime,
           vector,
-          excerpt: chunk.text.slice(0, MAX_EXCERPT_LENGTH),
+          excerpt,
           heading: chunk.heading,
           chunkIndex: chunkIdx
         };
+        this.fts.upsert({
+          key,
+          absPath: file.absPath,
+          relPath: file.relPath,
+          sourceDir: file.sourceDir,
+          heading: chunk.heading,
+          content: excerpt,
+          chunkIndex: chunkIdx,
+          mtime: file.mtime
+        });
       }
     }
     if (added + updated + removed > 0) {
@@ -944,9 +1155,20 @@ ${chunkText}`;
   }
   async rebuild() {
     this.data.entries = {};
+    try {
+      this.fts.clear();
+    } catch {
+    }
     await this.sync();
   }
-  async search(query, limit, signal) {
+  /**
+   * Pure vector search. Retained as an escape hatch for callers that
+   * explicitly want cosine-only ranking (tests, A/B comparisons).
+   *
+   * In the `knowledge_search` tool path we call `search()` below, which
+   * delegates to `hybridSearch()` by default.
+   */
+  async vectorSearch(query, limit, signal) {
     const queryVector = await this.embedder.embed(query, signal);
     const scored = [];
     for (const [key, entry] of Object.entries(this.data.entries)) {
@@ -972,6 +1194,93 @@ ${chunkText}`;
         heading: entry.heading
       };
     });
+  }
+  /**
+   * Default search path used by the `knowledge_search` tool. Delegates to
+   * hybrid (vector + BM25 fused via Reciprocal Rank Fusion).
+   */
+  async search(query, limit, signal) {
+    return this.hybridSearch(query, limit, signal);
+  }
+  /**
+   * Hybrid search: cosine embeddings + FTS5 BM25, fused via Reciprocal Rank
+   * Fusion (k=60). Falls back gracefully:
+   *   - no FTS hits or empty side-car → pure vector
+   *   - embedding call fails (network blip, rate limit) → pure BM25
+   *   - both fail → empty
+   *
+   * Deduplicates so only the best chunk per file is returned.
+   */
+  async hybridSearch(query, limit, signal) {
+    const K = 60;
+    const poolSize = Math.max(limit * 5, 50);
+    const vecPromise = this.runVectorRanks(query, poolSize, signal).catch((err) => {
+      if (process.env.KNOWLEDGE_SEARCH_DEBUG) {
+        console.error(`knowledge-search: vector search failed: ${err.message}`);
+      }
+      return /* @__PURE__ */ new Map();
+    });
+    let ftsRanks;
+    try {
+      ftsRanks = this.fts.searchRanks(query, poolSize);
+    } catch {
+      ftsRanks = /* @__PURE__ */ new Map();
+    }
+    const vecRanks = await vecPromise;
+    if (vecRanks.size === 0 && ftsRanks.size === 0) return [];
+    const fused = /* @__PURE__ */ new Map();
+    for (const [key, r] of vecRanks) {
+      fused.set(key, (fused.get(key) ?? 0) + 1 / (K + r));
+    }
+    for (const [key, r] of ftsRanks) {
+      fused.set(key, (fused.get(key) ?? 0) + 1 / (K + r));
+    }
+    const sorted = [...fused.entries()].sort((a, b) => b[1] - a[1]);
+    const seen = /* @__PURE__ */ new Set();
+    const out = [];
+    for (const [key, score] of sorted) {
+      const entry = this.data.entries[key];
+      const absPath = this.absPathFromKey(key);
+      if (seen.has(absPath)) continue;
+      seen.add(absPath);
+      if (entry) {
+        out.push({
+          path: absPath,
+          score,
+          excerpt: entry.excerpt,
+          heading: entry.heading
+        });
+      } else {
+        out.push({
+          path: absPath,
+          score,
+          excerpt: "",
+          heading: ""
+        });
+      }
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+  /**
+   * Run the vector side of hybrid search and return ranked keys as a
+   * Map<key, rank> (1-based). Kept internal — `vectorSearch()` is the
+   * public escape hatch.
+   */
+  async runVectorRanks(query, poolSize, signal) {
+    const queryVector = await this.embedder.embed(query, signal);
+    const scored = [];
+    for (const [key, entry] of Object.entries(this.data.entries)) {
+      if (!entry.vector) continue;
+      const score = dotProduct(queryVector, entry.vector);
+      if (score <= 0.15) continue;
+      scored.push({ key, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    const out = /* @__PURE__ */ new Map();
+    const n = Math.min(scored.length, poolSize);
+    for (let i = 0; i < n; i++) out.set(scored[i].key, i + 1);
+    return out;
   }
   /**
    * Update a single file in the index (called by watcher).
@@ -1001,15 +1310,26 @@ ${chunkText}`;
       const vector = vectors[i];
       if (!vector) continue;
       const key = this.entryKey(absPath, i);
+      const excerpt = chunks[i].text.slice(0, MAX_EXCERPT_LENGTH);
       this.data.entries[key] = {
         relPath,
         sourceDir,
         mtime: stat.mtimeMs,
         vector,
-        excerpt: chunks[i].text.slice(0, MAX_EXCERPT_LENGTH),
+        excerpt,
         heading: chunks[i].heading,
         chunkIndex: i
       };
+      this.fts.upsert({
+        key,
+        absPath,
+        relPath,
+        sourceDir,
+        heading: chunks[i].heading,
+        content: excerpt,
+        chunkIndex: i,
+        mtime: stat.mtimeMs
+      });
     }
     this.scheduleSave();
   }
@@ -1031,6 +1351,10 @@ ${chunkText}`;
     }
     if (this.dirty) {
       await this.save();
+    }
+    try {
+      this.fts.close();
+    } catch {
     }
   }
   // -----------------------------------------------------------------------

@@ -1,6 +1,15 @@
 # pi-knowledge-search
 
-Semantic search over local files for [pi](https://github.com/badlogic/pi). Indexes directories of text/markdown files using vector embeddings, watches for changes in real-time, and exposes a `knowledge_search` tool the LLM can call.
+Hybrid search over local files for [pi](https://github.com/badlogic/pi). Indexes directories of text/markdown files using vector embeddings **and** SQLite FTS5 keyword search, watches for changes in real-time, and exposes a `knowledge_search` tool the LLM can call.
+
+## How search works
+
+Every query runs against two backends in parallel and fuses the results via Reciprocal Rank Fusion (k=60):
+
+- **Vector cosine similarity** — good for conceptual/fuzzy queries ("how did we handle X")
+- **BM25 full-text** via SQLite FTS5 — good for exact matches, proper nouns, error strings, file paths, code identifiers
+
+Docs that both backends agree on get boosted; either backend alone still surfaces relevant hits. If the embedder fails transiently, search falls back to pure BM25; if the FTS side-car is empty, it falls back to pure vector. Existing users upgrade seamlessly — the FTS side-car is backfilled from the vector index on first load with no re-embedding needed.
 
 ## Install
 
