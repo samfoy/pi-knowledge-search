@@ -42,12 +42,12 @@ class TableEmbedder implements Embedder {
 
 describe("toFtsQuery", () => {
   it("strips FTS syntax characters", () => {
-    assert.equal(toFtsQuery('hello *world*'), '"hello" "world"');
-    assert.equal(toFtsQuery('"quoted" (paren)'), '"quoted" "paren"');
+    assert.equal(toFtsQuery('hello *world*'), '"hello" OR "world"');
+    assert.equal(toFtsQuery('"quoted" (paren)'), '"quoted" OR "paren"');
   });
 
-  it("joins terms with implicit AND (space)", () => {
-    assert.equal(toFtsQuery("auth flow login"), '"auth" "flow" "login"');
+  it("joins terms with OR so BM25 can rank partial matches", () => {
+    assert.equal(toFtsQuery("auth flow login"), '"auth" OR "flow" OR "login"');
   });
 
   it("returns empty string for empty/whitespace query", () => {
@@ -56,7 +56,7 @@ describe("toFtsQuery", () => {
   });
 
   it("preserves unicode words", () => {
-    assert.equal(toFtsQuery("café journal"), '"café" "journal"');
+    assert.equal(toFtsQuery("café journal"), '"café" OR "journal"');
   });
 });
 

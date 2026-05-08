@@ -258,5 +258,5 @@ export function toFtsQuery(q: string): string {
     .map((t) => t.trim())
     .filter((t) => t.length > 0)
     .map((t) => `"${t}"`);
-  return terms.join(" "); // implicit AND in FTS5
+  return terms.join(" OR ");
 }
