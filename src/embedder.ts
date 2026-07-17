@@ -206,19 +206,28 @@ class BedrockEmbedder implements Embedder {
   ): Promise<(number[] | null)[]> {
     const client = await this.clientPromise;
 
-    return parallelMap(
+    let failed = 0;
+    let lastErr = "";
+    const out = await parallelMap(
       texts,
       async (text) => {
         try {
           return await this.callBedrock(client, text);
         } catch (err: any) {
-          console.error(`Bedrock embedding failed (${text.slice(0, 50)}...): ${err.message}`);
+          failed++;
+          lastErr = err.message;
           return null;
         }
       },
       concurrency,
       signal
     );
+    // Aggregate to one line instead of one console.error per failed chunk —
+    // a per-item log floods the TUI when the provider is unreachable.
+    if (failed > 0) {
+      console.error(`Bedrock embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+    }
+    return out;
   }
 
   private async callBedrock(client: any, text: string): Promise<number[]> {
@@ -290,18 +299,27 @@ class OllamaEmbedder implements Embedder {
   ): Promise<(number[] | null)[]> {
     // Ollama /api/embed supports batch via `input` array
     // but some models/versions don't. Fall back to parallel single calls.
-    return parallelMap(
+    let failed = 0;
+    let lastErr = "";
+    const out = await parallelMap(
       texts,
       async (text) => {
         try {
           return await this.embed(text, signal);
         } catch (err: any) {
-          console.error(`Ollama embedding failed (${text.slice(0, 50)}...): ${err.message}`);
+          failed++;
+          lastErr = err.message;
           return null;
         }
       },
       concurrency,
       signal
     );
+    // Aggregate to one line instead of one console.error per failed chunk —
+    // a wedged Ollama would otherwise flood the TUI and corrupt the input box.
+    if (failed > 0) {
+      console.error(`Ollama embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+    }
+    return out;
   }
 }

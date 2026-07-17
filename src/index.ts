@@ -157,15 +157,29 @@ export default function (pi: ExtensionAPI) {
       });
 
       let stdout = "";
+      let stderrBuf = "";
+      // Surface worker status through the managed UI when a TUI is present.
+      // Writing directly to the terminal (console.error) from these async
+      // callbacks paints outside pi's render region and corrupts the input
+      // box; only fall back to console.error in headless (-p/json) modes.
+      const report = (msg: string, level: "info" | "warning" | "error" = "error") => {
+        if (ctx.hasUI) {
+          ctx.ui.notify(msg, level);
+        } else {
+          console.error(msg);
+        }
+      };
       worker.stdout?.on("data", (chunk: Buffer) => {
         stdout += chunk.toString();
       });
       worker.stderr?.on("data", (chunk: Buffer) => {
-        console.error(`knowledge-search worker: ${chunk.toString().trim()}`);
+        // Buffer worker stderr and surface a single summarized line on exit
+        // instead of echoing every chunk raw to the terminal.
+        stderrBuf += chunk.toString();
       });
 
       worker.on("error", (err) => {
-        console.error(`knowledge-search: worker error: ${err.message}`);
+        report(`knowledge-search: worker error: ${err.message}`);
       });
 
       worker.on("exit", async (code, signal) => {
@@ -195,19 +209,23 @@ export default function (pi: ExtensionAPI) {
           }
           workerRestartCount++;
 
+          const stderrTail = stderrBuf.trim().split("\n").filter(Boolean).pop() ?? "";
+          const detail = stderrTail ? ` (${stderrTail})` : "";
           if (workerRestartCount > MAX_WORKER_RESTARTS) {
-            console.error(
-              `knowledge-search: worker crashed ${workerRestartCount} times within ${RESTART_WINDOW_MS / 1000}s, giving up`
+            report(
+              `knowledge-search: indexing worker crashed ${workerRestartCount}x within ${RESTART_WINDOW_MS / 1000}s, giving up${detail}`
             );
           } else {
-            console.error(
-              `knowledge-search: worker exited unexpectedly (code=${code}, signal=${signal}), restarting (${workerRestartCount}/${MAX_WORKER_RESTARTS})...`
+            report(
+              `knowledge-search: indexing worker failed (code=${code}, signal=${signal}), retrying ${workerRestartCount}/${MAX_WORKER_RESTARTS}${detail}`,
+              "warning"
             );
             setTimeout(() => {
               if (!workerExitExpected) spawnWorker();
             }, 2000);
           }
         }
+        stderrBuf = "";
       });
       worker.unref();
     }

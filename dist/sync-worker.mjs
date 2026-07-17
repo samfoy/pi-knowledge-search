@@ -302,19 +302,26 @@ var BedrockEmbedder = class {
   }
   async embedBatch(texts, signal, concurrency = 10) {
     const client = await this.clientPromise;
-    return parallelMap(
+    let failed = 0;
+    let lastErr = "";
+    const out = await parallelMap(
       texts,
       async (text) => {
         try {
           return await this.callBedrock(client, text);
         } catch (err) {
-          console.error(`Bedrock embedding failed (${text.slice(0, 50)}...): ${err.message}`);
+          failed++;
+          lastErr = err.message;
           return null;
         }
       },
       concurrency,
       signal
     );
+    if (failed > 0) {
+      console.error(`Bedrock embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+    }
+    return out;
   }
   async callBedrock(client, text) {
     return withRateLimitRetry(async () => {
@@ -365,19 +372,26 @@ var OllamaEmbedder = class {
     }, "Ollama embed");
   }
   async embedBatch(texts, signal, concurrency = 4) {
-    return parallelMap(
+    let failed = 0;
+    let lastErr = "";
+    const out = await parallelMap(
       texts,
       async (text) => {
         try {
           return await this.embed(text, signal);
         } catch (err) {
-          console.error(`Ollama embedding failed (${text.slice(0, 50)}...): ${err.message}`);
+          failed++;
+          lastErr = err.message;
           return null;
         }
       },
       concurrency,
       signal
     );
+    if (failed > 0) {
+      console.error(`Ollama embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+    }
+    return out;
   }
 };
 

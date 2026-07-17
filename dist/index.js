@@ -312,19 +312,26 @@ var BedrockEmbedder = class {
   }
   async embedBatch(texts, signal, concurrency = 10) {
     const client = await this.clientPromise;
-    return parallelMap(
+    let failed = 0;
+    let lastErr = "";
+    const out = await parallelMap(
       texts,
       async (text) => {
         try {
           return await this.callBedrock(client, text);
         } catch (err) {
-          console.error(`Bedrock embedding failed (${text.slice(0, 50)}...): ${err.message}`);
+          failed++;
+          lastErr = err.message;
           return null;
         }
       },
       concurrency,
       signal
     );
+    if (failed > 0) {
+      console.error(`Bedrock embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+    }
+    return out;
   }
   async callBedrock(client, text) {
     return withRateLimitRetry(async () => {
@@ -375,19 +382,26 @@ var OllamaEmbedder = class {
     }, "Ollama embed");
   }
   async embedBatch(texts, signal, concurrency = 4) {
-    return parallelMap(
+    let failed = 0;
+    let lastErr = "";
+    const out = await parallelMap(
       texts,
       async (text) => {
         try {
           return await this.embed(text, signal);
         } catch (err) {
-          console.error(`Ollama embedding failed (${text.slice(0, 50)}...): ${err.message}`);
+          failed++;
+          lastErr = err.message;
           return null;
         }
       },
       concurrency,
       signal
     );
+    if (failed > 0) {
+      console.error(`Ollama embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+    }
+    return out;
   }
 };
 
@@ -2190,14 +2204,22 @@ function index_default(pi) {
         env: { ...process.env, KNOWLEDGE_SEARCH_CWD: sessionCwd ?? process.env.KNOWLEDGE_SEARCH_CWD ?? "" }
       });
       let stdout = "";
+      let stderrBuf = "";
+      const report = (msg, level = "error") => {
+        if (ctx.hasUI) {
+          ctx.ui.notify(msg, level);
+        } else {
+          console.error(msg);
+        }
+      };
       worker.stdout?.on("data", (chunk) => {
         stdout += chunk.toString();
       });
       worker.stderr?.on("data", (chunk) => {
-        console.error(`knowledge-search worker: ${chunk.toString().trim()}`);
+        stderrBuf += chunk.toString();
       });
       worker.on("error", (err) => {
-        console.error(`knowledge-search: worker error: ${err.message}`);
+        report(`knowledge-search: worker error: ${err.message}`);
       });
       worker.on("exit", async (code, signal) => {
         syncDone = true;
@@ -2222,19 +2244,23 @@ function index_default(pi) {
             workerRestartWindowStart = now;
           }
           workerRestartCount++;
+          const stderrTail = stderrBuf.trim().split("\n").filter(Boolean).pop() ?? "";
+          const detail = stderrTail ? ` (${stderrTail})` : "";
           if (workerRestartCount > MAX_WORKER_RESTARTS) {
-            console.error(
-              `knowledge-search: worker crashed ${workerRestartCount} times within ${RESTART_WINDOW_MS / 1e3}s, giving up`
+            report(
+              `knowledge-search: indexing worker crashed ${workerRestartCount}x within ${RESTART_WINDOW_MS / 1e3}s, giving up${detail}`
             );
           } else {
-            console.error(
-              `knowledge-search: worker exited unexpectedly (code=${code}, signal=${signal}), restarting (${workerRestartCount}/${MAX_WORKER_RESTARTS})...`
+            report(
+              `knowledge-search: indexing worker failed (code=${code}, signal=${signal}), retrying ${workerRestartCount}/${MAX_WORKER_RESTARTS}${detail}`,
+              "warning"
             );
             setTimeout(() => {
               if (!workerExitExpected) spawnWorker();
             }, 2e3);
           }
         }
+        stderrBuf = "";
       });
       worker.unref();
     }
