@@ -184,6 +184,11 @@ function createEmbedder(config2, dimensions) {
 function truncate(text, maxChars = 1e4) {
   return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
+function summarizeErrors(errs, max = 3) {
+  const list = [...errs];
+  const shown = list.slice(0, max).join("; ");
+  return list.length > max ? `${shown} (+${list.length - max} more)` : shown;
+}
 var RETRY_DELAYS = [1e3, 2e3, 4e3];
 async function withRateLimitRetry(fn, label) {
   for (let attempt = 0; ; attempt++) {
@@ -303,7 +308,7 @@ var BedrockEmbedder = class {
   async embedBatch(texts, signal, concurrency = 10) {
     const client = await this.clientPromise;
     let failed = 0;
-    let lastErr = "";
+    const errs = /* @__PURE__ */ new Set();
     const out = await parallelMap(
       texts,
       async (text) => {
@@ -311,7 +316,7 @@ var BedrockEmbedder = class {
           return await this.callBedrock(client, text);
         } catch (err) {
           failed++;
-          lastErr = err.message;
+          errs.add(err.message);
           return null;
         }
       },
@@ -319,7 +324,9 @@ var BedrockEmbedder = class {
       signal
     );
     if (failed > 0) {
-      console.error(`Bedrock embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+      console.error(
+        `Bedrock embedding failed for ${failed}/${texts.length} chunks: ${summarizeErrors(errs)}`
+      );
     }
     return out;
   }
@@ -373,7 +380,7 @@ var OllamaEmbedder = class {
   }
   async embedBatch(texts, signal, concurrency = 4) {
     let failed = 0;
-    let lastErr = "";
+    const errs = /* @__PURE__ */ new Set();
     const out = await parallelMap(
       texts,
       async (text) => {
@@ -381,7 +388,7 @@ var OllamaEmbedder = class {
           return await this.embed(text, signal);
         } catch (err) {
           failed++;
-          lastErr = err.message;
+          errs.add(err.message);
           return null;
         }
       },
@@ -389,7 +396,9 @@ var OllamaEmbedder = class {
       signal
     );
     if (failed > 0) {
-      console.error(`Ollama embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+      console.error(
+        `Ollama embedding failed for ${failed}/${texts.length} chunks: ${summarizeErrors(errs)}`
+      );
     }
     return out;
   }

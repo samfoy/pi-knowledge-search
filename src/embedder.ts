@@ -39,6 +39,17 @@ function truncate(text: string, maxChars = 10000): string {
   return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
+/**
+ * Summarize a set of distinct embedding-failure messages for a single log
+ * line. Caps the number shown so a batch failing with many different errors
+ * can't itself flood the output.
+ */
+function summarizeErrors(errs: Set<string>, max = 3): string {
+  const list = [...errs];
+  const shown = list.slice(0, max).join("; ");
+  return list.length > max ? `${shown} (+${list.length - max} more)` : shown;
+}
+
 const RETRY_DELAYS = [1000, 2000, 4000]; // exponential backoff for 429s
 
 /** Retry a fetch-based operation on 429 rate-limit errors with exponential backoff. */
@@ -207,7 +218,7 @@ class BedrockEmbedder implements Embedder {
     const client = await this.clientPromise;
 
     let failed = 0;
-    let lastErr = "";
+    const errs = new Set<string>();
     const out = await parallelMap(
       texts,
       async (text) => {
@@ -215,7 +226,7 @@ class BedrockEmbedder implements Embedder {
           return await this.callBedrock(client, text);
         } catch (err: any) {
           failed++;
-          lastErr = err.message;
+          errs.add(err.message);
           return null;
         }
       },
@@ -223,9 +234,13 @@ class BedrockEmbedder implements Embedder {
       signal
     );
     // Aggregate to one line instead of one console.error per failed chunk —
-    // a per-item log floods the TUI when the provider is unreachable.
+    // a per-item log floods the TUI when the provider is unreachable. Report
+    // the distinct error messages (capped) so a mix of failure modes is
+    // still visible without re-introducing per-chunk spam.
     if (failed > 0) {
-      console.error(`Bedrock embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+      console.error(
+        `Bedrock embedding failed for ${failed}/${texts.length} chunks: ${summarizeErrors(errs)}`
+      );
     }
     return out;
   }
@@ -300,7 +315,7 @@ class OllamaEmbedder implements Embedder {
     // Ollama /api/embed supports batch via `input` array
     // but some models/versions don't. Fall back to parallel single calls.
     let failed = 0;
-    let lastErr = "";
+    const errs = new Set<string>();
     const out = await parallelMap(
       texts,
       async (text) => {
@@ -308,7 +323,7 @@ class OllamaEmbedder implements Embedder {
           return await this.embed(text, signal);
         } catch (err: any) {
           failed++;
-          lastErr = err.message;
+          errs.add(err.message);
           return null;
         }
       },
@@ -317,8 +332,12 @@ class OllamaEmbedder implements Embedder {
     );
     // Aggregate to one line instead of one console.error per failed chunk —
     // a wedged Ollama would otherwise flood the TUI and corrupt the input box.
+    // Report the distinct error messages (capped) so a mix of failure modes
+    // is still visible without re-introducing per-chunk spam.
     if (failed > 0) {
-      console.error(`Ollama embedding failed for ${failed}/${texts.length} chunks: ${lastErr}`);
+      console.error(
+        `Ollama embedding failed for ${failed}/${texts.length} chunks: ${summarizeErrors(errs)}`
+      );
     }
     return out;
   }

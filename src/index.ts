@@ -200,6 +200,14 @@ export default function (pi: ExtensionAPI) {
           } catch {
             // ignore parse errors
           }
+          // A clean exit can still carry non-fatal diagnostics (e.g. an
+          // aggregated "embedding failed for N/M chunks" line) the worker
+          // wrote to stderr. Surface the last such line as a warning so it
+          // isn't silently dropped, without treating the run as failed.
+          const stderrTail = stderrBuf.trim().split("\n").filter(Boolean).pop() ?? "";
+          if (stderrTail) {
+            report(`knowledge-search: ${stderrTail}`, "warning");
+          }
         } else if (code !== 0 && !workerExitExpected) {
           const now = Date.now();
           // Reset counter if outside the time window
