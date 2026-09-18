@@ -1,5 +1,5 @@
 // src/index.ts
-import { Type } from "@sinclair/typebox";
+import { Type } from "typebox";
 import { fork } from "node:child_process";
 import * as fs5 from "node:fs";
 import { join as join5 } from "node:path";
