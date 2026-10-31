@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A background sync that changed nothing no longer marks the index stale. The worker writes
+  `index.json` only when files were added, updated or removed, so after a no-op sync the next
+  `knowledge_search` or `kb_read` call no longer parses the whole index again.
+
 ## 1.3.8
 
 ### Fixed

@@ -203,10 +203,11 @@ export default function (pi: ExtensionAPI) {
         if (code === 0 && stdout) {
           try {
             const result = JSON.parse(stdout);
-            // The worker rewrote the index on disk; the next tool call re-reads it.
-            indexStale = true;
             const changes = result.added + result.updated + result.removed;
             if (changes > 0) {
+              // The worker rewrote the index on disk; the next tool call re-reads it.
+              // It saves only when something changed, so a no-op sync needs no second parse.
+              indexStale = true;
               ctx.ui.setStatus(
                 "knowledge-search",
                 `Index: +${result.added} ~${result.updated} -${result.removed} (${result.size} files, ${result.chunks} chunks)`

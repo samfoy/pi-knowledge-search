@@ -2262,9 +2262,9 @@ function index_default(pi) {
         if (code === 0 && stdout) {
           try {
             const result = JSON.parse(stdout);
-            indexStale = true;
             const changes = result.added + result.updated + result.removed;
             if (changes > 0) {
+              indexStale = true;
               ctx.ui.setStatus(
                 "knowledge-search",
                 `Index: +${result.added} ~${result.updated} -${result.removed} (${result.size} files, ${result.chunks} chunks)`
