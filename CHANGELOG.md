@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The sync worker runs in a `worker_threads` Worker instead of a `child_process.fork()`. `fork()`
+  re-executes `process.execPath`, which under a compiled pi binary (`bun build --compile`) is the
+  pi executable itself, so the worker never ran and the index stayed silently empty. Worker
+  stdout/stderr are now captured instead of leaking raw to the terminal, and a session context
+  that goes stale before the sync finishes no longer crashes the host. (#17)
+
 ## 1.3.8
 
 ### Fixed
