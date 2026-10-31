@@ -1,14 +1,24 @@
 import type { ExtensionAPI, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { fork } from "node:child_process";
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { Worker } from "node:worker_threads";
 import { loadConfig, saveConfig, getConfigPath, type Config, type ConfigFile } from "./config.js";
 import { createEmbedder } from "./embedder.js";
 import { KnowledgeIndex } from "./index-store.js";
 import { BedrockKBSearcher } from "./kb-searcher.js";
 import { buildOverview, formatOverview } from "./overview.js";
 import { resolveNote, readNote } from "./kb-reader.js";
+
+/** Result message the sync worker posts over its parent port. */
+interface WorkerDoneMessage {
+  type: "done";
+  added: number;
+  updated: number;
+  removed: number;
+  size: number;
+  chunks: number;
+}
 
 export default function (pi: ExtensionAPI) {
   let index: KnowledgeIndex | null = null;
@@ -17,6 +27,8 @@ export default function (pi: ExtensionAPI) {
   let sessionCwd: string | undefined;
   let syncDone = false;
   let workerExitExpected = false;
+  let activeWorker: Worker | null = null;
+  let statusClearTimer: NodeJS.Timeout | undefined;
 
   // The on-disk index can be hundreds of MB of JSON, and parsing it blocks pi's event loop for
   // seconds, so it is read on first use (a tool call or the startup overview) rather than at every
@@ -149,7 +161,7 @@ export default function (pi: ExtensionAPI) {
         console.error(`knowledge-search: index load failed: ${msg}`);
       });
 
-    // Sync in a child process so it never blocks the main event loop
+    // Sync in a worker thread so it never blocks the main event loop
     const MAX_WORKER_RESTARTS = 3;
     const RESTART_WINDOW_MS = 60_000;
     let workerRestartCount = 0;
@@ -159,21 +171,24 @@ export default function (pi: ExtensionAPI) {
       // Use pre-compiled worker to avoid ESM/CJS cycle with tsx on Node 25+
       // Rebuild with: npm run build:worker
       const workerPath = join(import.meta.dirname, "..", "dist", "sync-worker.mjs");
-      const worker = fork(workerPath, [], {
-        stdio: ["ignore", "pipe", "pipe", "ipc"],
+      // worker_threads, not fork(): under compiled pi, process.execPath is pi itself (#17).
+      const worker = new Worker(workerPath, {
         // Suppress "node:sqlite is experimental" warning — node:sqlite is stable
         // enough for our read/write usage and the warning pollutes pi startup.
         execArgv: ["--no-warnings=ExperimentalWarning"],
+        // Capture worker stdio; it would otherwise paint raw over pi's TUI (#14).
+        stdout: true,
+        stderr: true,
         // Forward sessionCwd so the worker resolves the same project-local
         // settings.json (pi-knowledge-search.localPath / pi-total-recall cascade).
-        env: {
-          ...process.env,
-          KNOWLEDGE_SEARCH_CWD: sessionCwd ?? process.env.KNOWLEDGE_SEARCH_CWD ?? "",
-        },
+        workerData: { cwd: sessionCwd ?? process.env.KNOWLEDGE_SEARCH_CWD },
       });
+      activeWorker = worker;
 
-      let stdout = "";
       let stderrBuf = "";
+      let workerDone = false;
+      // Reported once on exit; preferred over stderr, which worker-mode failures never write.
+      let lastWorkerError = "";
       // Surface worker status through the managed UI when a TUI is present.
       // Writing directly to the terminal (console.error) from these async
       // callbacks paints outside pi's render region and corrupts the input
@@ -185,38 +200,39 @@ export default function (pi: ExtensionAPI) {
           console.error(msg);
         }
       };
-      worker.stdout?.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
+
+      // Piped worker stdout only ever carries stray diagnostics — the sync
+      // result arrives over the port — so drain it instead of buffering.
+      worker.stdout?.resume();
       worker.stderr?.on("data", (chunk: Buffer) => {
         // Buffer worker stderr and surface a single summarized line on exit
         // instead of echoing every chunk raw to the terminal.
         stderrBuf += chunk.toString();
       });
 
-      worker.on("error", (err) => {
-        report(`knowledge-search: worker error: ${err.message}`);
-      });
-
-      worker.on("exit", async (code, signal) => {
-        syncDone = true;
-        if (code === 0 && stdout) {
-          try {
-            const result = JSON.parse(stdout);
-            // The worker rewrote the index on disk; the next tool call re-reads it.
-            indexStale = true;
-            const changes = result.added + result.updated + result.removed;
-            if (changes > 0) {
-              ctx.ui.setStatus(
-                "knowledge-search",
-                `Index: +${result.added} ~${result.updated} -${result.removed} (${result.size} files, ${result.chunks} chunks)`
-              );
-              setTimeout(() => ctx.ui.setStatus("knowledge-search", ""), 5000);
-            }
-          } catch {
-            // ignore parse errors
+      worker.on("message", (msg: WorkerDoneMessage) => {
+        if (msg.type !== "done" || workerDone) return;
+        workerDone = true;
+        // The worker rewrote the index on disk; the next tool call re-reads it.
+        indexStale = true;
+        // Best-effort: a stale ctx must not throw out of this handler and kill the host.
+        try {
+          const changes = msg.added + msg.updated + msg.removed;
+          if (changes > 0) {
+            ctx.ui.setStatus(
+              "knowledge-search",
+              `Index: +${msg.added} ~${msg.updated} -${msg.removed} (${msg.size} files, ${msg.chunks} chunks)`
+            );
+            statusClearTimer = setTimeout(() => {
+              try {
+                ctx.ui.setStatus("knowledge-search", "");
+              } catch {
+                // stale ctx
+              }
+            }, 5000);
+            statusClearTimer.unref();
           }
-          // A clean exit can still carry non-fatal diagnostics (e.g. an
+          // A clean run can still carry non-fatal diagnostics (e.g. an
           // aggregated "embedding failed for N/M chunks" line) the worker
           // wrote to stderr. Surface the last such line as a warning so it
           // isn't silently dropped, without treating the run as failed.
@@ -224,7 +240,22 @@ export default function (pi: ExtensionAPI) {
           if (stderrTail) {
             report(`knowledge-search: ${stderrTail}`, "warning");
           }
-        } else if (code !== 0 && !workerExitExpected) {
+        } catch {
+          // stale ctx — sync already succeeded
+        } finally {
+          // Index is persisted; don't wait for keep-alive sockets to drain.
+          void worker.terminate();
+        }
+      });
+
+      worker.on("error", (err: Error) => {
+        lastWorkerError = err.message;
+      });
+
+      worker.on("exit", async (code) => {
+        if (activeWorker === worker) activeWorker = null;
+        syncDone = true;
+        if (code !== 0 && !workerExitExpected && !workerDone) {
           const now = Date.now();
           // Reset counter if outside the time window
           if (now - workerRestartWindowStart > RESTART_WINDOW_MS) {
@@ -234,14 +265,15 @@ export default function (pi: ExtensionAPI) {
           workerRestartCount++;
 
           const stderrTail = stderrBuf.trim().split("\n").filter(Boolean).pop() ?? "";
-          const detail = stderrTail ? ` (${stderrTail})` : "";
+          const cause = lastWorkerError || stderrTail;
+          const detail = cause ? ` (${cause})` : "";
           if (workerRestartCount > MAX_WORKER_RESTARTS) {
             report(
               `knowledge-search: indexing worker crashed ${workerRestartCount}x within ${RESTART_WINDOW_MS / 1000}s, giving up${detail}`
             );
           } else {
             report(
-              `knowledge-search: indexing worker failed (code=${code}, signal=${signal}), retrying ${workerRestartCount}/${MAX_WORKER_RESTARTS}${detail}`,
+              `knowledge-search: indexing worker failed (code=${code}), retrying ${workerRestartCount}/${MAX_WORKER_RESTARTS}${detail}`,
               "warning"
             );
             setTimeout(() => {
@@ -258,8 +290,11 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    // Cancel the 5s status-clear timer before it can fire into the now-stale ctx.
+    clearTimeout(statusClearTimer);
     workerExitExpected = true;
     // watcher removed (d38a81f) — caused UI freezes. Rely on sync-on-startup only.
+    await activeWorker?.terminate();
     await index?.close();
   });
 

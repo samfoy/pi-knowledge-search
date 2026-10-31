@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+// src/sync-worker.ts
+import { parentPort, workerData } from "node:worker_threads";
+
 // src/config.ts
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -171,16 +174,16 @@ function envBool(key) {
 }
 
 // src/embedder.ts
-function createEmbedder(config2, dimensions) {
-  switch (config2.type) {
+function createEmbedder(config, dimensions) {
+  switch (config.type) {
     case "openai":
-      return new OpenAIEmbedder(config2.apiKey, config2.model, dimensions, void 0);
+      return new OpenAIEmbedder(config.apiKey, config.model, dimensions, void 0);
     case "openai-compatible":
-      return new OpenAIEmbedder(config2.apiKey ?? "", config2.model, dimensions, config2.baseUrl);
+      return new OpenAIEmbedder(config.apiKey ?? "", config.model, dimensions, config.baseUrl);
     case "bedrock":
-      return new BedrockEmbedder(config2.profile, config2.region, config2.model, dimensions);
+      return new BedrockEmbedder(config.profile, config.region, config.model, dimensions);
     case "ollama":
-      return new OllamaEmbedder(config2.url, config2.model);
+      return new OllamaEmbedder(config.url, config.model);
   }
 }
 function truncate(text, maxChars = 1e4) {
@@ -891,15 +894,15 @@ var KnowledgeIndex = class _KnowledgeIndex {
   dirty = false;
   saveTimer = null;
   fts;
-  constructor(config2, embedder2) {
-    this.config = config2;
-    this.embedder = embedder2;
+  constructor(config, embedder) {
+    this.config = config;
+    this.embedder = embedder;
     this.data = {
       version: INDEX_VERSION,
-      dimensions: config2.dimensions,
+      dimensions: config.dimensions,
       entries: {}
     };
-    this.fts = new FtsChunkIndex(config2.indexDir);
+    this.fts = new FtsChunkIndex(config.indexDir);
   }
   /** True when no embedder is configured — search runs pure BM25. */
   get isFtsOnly() {
@@ -1565,34 +1568,37 @@ function dotProduct(a, b) {
 }
 
 // src/sync-worker.ts
-process.on("uncaughtException", (err) => {
-  process.stderr.write(`knowledge-search worker uncaught: ${err.message}
-`);
-  process.exit(1);
-});
-process.on("unhandledRejection", (reason) => {
-  process.stderr.write(`knowledge-search worker unhandled rejection: ${reason}
-`);
-  process.exit(1);
-});
-var config = loadConfig(process.env.KNOWLEDGE_SEARCH_CWD || void 0);
-if (!config || config.dirs.length === 0) {
-  process.exit(0);
+var port = parentPort;
+async function run() {
+  const cwd = port ? workerData?.cwd : process.env.KNOWLEDGE_SEARCH_CWD || void 0;
+  const config = loadConfig(cwd);
+  if (!config || config.dirs.length === 0) return null;
+  const embedder = config.provider ? createEmbedder(config.provider, config.dimensions) : null;
+  const index = new KnowledgeIndex(config, embedder);
+  await index.load();
+  const { added, updated, removed } = await index.sync();
+  return { added, updated, removed, size: index.size(), chunks: index.chunkCount() };
 }
-var embedder = config.provider ? createEmbedder(config.provider, config.dimensions) : null;
-var index = new KnowledgeIndex(config, embedder);
-await index.load();
-index.sync().then(({ added, updated, removed }) => {
-  const result = JSON.stringify({
-    added,
-    updated,
-    removed,
-    size: index.size(),
-    chunks: index.chunkCount()
+if (port) {
+  run().then((result) => {
+    if (result) port.postMessage({ type: "done", ...result });
   });
-  process.stdout.write(result);
-  process.exit(0);
-}).catch((err) => {
-  process.stderr.write(err.message);
-  process.exit(1);
-});
+} else {
+  process.on("uncaughtException", (err) => {
+    process.stderr.write(`knowledge-search worker uncaught: ${err.message}
+`);
+    process.exit(1);
+  });
+  process.on("unhandledRejection", (reason) => {
+    process.stderr.write(`knowledge-search worker unhandled rejection: ${reason}
+`);
+    process.exit(1);
+  });
+  run().then((result) => {
+    if (result) process.stdout.write(JSON.stringify(result));
+    process.exit(0);
+  }).catch((err) => {
+    process.stderr.write(err.message);
+    process.exit(1);
+  });
+}
